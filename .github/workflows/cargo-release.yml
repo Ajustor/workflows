@@ -14,6 +14,10 @@ on:
         description: 'Binary name (defaults to repo name)'
         required: false
         type: string
+      publish_to_crate:
+        description: 'Force publishing to crate'
+        required: false
+        type: boolean
     secrets:
       CARGO_REGISTRY_TOKEN:
         description: 'crates.io token (optional, for future use)'
@@ -151,7 +155,7 @@ jobs:
 
   publish:
     needs: [prepare, test]
-    if: needs.prepare.outputs.should_publish == true
+    if: inputs.publish_to_crate || needs.prepare.outputs.should_publish == true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
