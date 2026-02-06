@@ -151,7 +151,7 @@ jobs:
 
   publish:
     needs: [prepare, test]
-    if: needs.prepare.outputs.should_publish == 'true'
+    if: needs.prepare.outputs.should_publish == true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
