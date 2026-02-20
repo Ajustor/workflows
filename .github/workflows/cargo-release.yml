@@ -74,8 +74,8 @@ jobs:
                 ;;
               macos)
                 [ "$FIRST" = true ] && FIRST=false || MATRIX+=","
-                MATRIX+='{"target":"x86_64-apple-darwin","os":"macos-latest","ext":""}'
-                MATRIX+=', '
+                # MATRIX+='{"target":"x86_64-apple-darwin","os":"macos-latest","ext":""}'
+                # MATRIX+=', '
                 MATRIX+='{"target":"aarch64-apple-darwin","os":"macos-latest","ext":""}'
                 ;;
             esac
