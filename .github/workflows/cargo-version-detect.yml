@@ -1,0 +1,68 @@
+# .github/workflows/cargo-version-detect.yml
+# Reusable workflow that detects version changes in Cargo.toml
+# between the current commit and its parent.
+
+name: Detect Cargo Version Change
+
+on:
+  workflow_call:
+    inputs:
+      cargo_toml_path:
+        description: 'Path to Cargo.toml (default: Cargo.toml at repo root)'
+        required: false
+        type: string
+        default: 'Cargo.toml'
+    outputs:
+      version_changed:
+        description: 'Whether the version in Cargo.toml has changed ("true" / "false")'
+        value: ${{ jobs.detect.outputs.version_changed }}
+      new_version:
+        description: 'The current version from Cargo.toml'
+        value: ${{ jobs.detect.outputs.new_version }}
+      previous_version:
+        description: 'The previous version from Cargo.toml (empty if first commit or file did not exist)'
+        value: ${{ jobs.detect.outputs.previous_version }}
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      version_changed: ${{ steps.version-check.outputs.changed }}
+      new_version: ${{ steps.version-check.outputs.current }}
+      previous_version: ${{ steps.version-check.outputs.previous }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Check version change
+        id: version-check
+        run: |
+          CARGO_PATH="${{ inputs.cargo_toml_path }}"
+
+          # Extract current version
+          CURRENT=$(grep -m1 '^version' "$CARGO_PATH" | sed 's/version *= *"\(.*\)"/\1/')
+
+          # Extract previous version from parent commit
+          if git rev-parse HEAD~1 >/dev/null 2>&1; then
+            PREVIOUS=$(git show HEAD~1:"$CARGO_PATH" 2>/dev/null \
+              | grep -m1 '^version' \
+              | sed 's/version *= *"\(.*\)"/\1/' || echo "")
+          else
+            # First commit — no parent exists
+            PREVIOUS=""
+          fi
+
+          echo "Current version:  $CURRENT"
+          echo "Previous version: $PREVIOUS"
+
+          echo "current=$CURRENT"   >> "$GITHUB_OUTPUT"
+          echo "previous=$PREVIOUS" >> "$GITHUB_OUTPUT"
+
+          if [ "$CURRENT" != "$PREVIOUS" ]; then
+            echo "✅ Version changed ($PREVIOUS → $CURRENT)"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ℹ️  Version unchanged ($CURRENT)"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
