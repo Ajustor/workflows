@@ -98,11 +98,11 @@ name: CI & Release
 
 on:
   push:
-    branches: [main]
+    branches: [master]
     tags:
       - 'v*'  # Déclenche aussi sur les tags (ex: v1.0.0)
   pull_request:
-    branches: [main]
+    branches: [master]
 
 jobs:
   # ── Détection de changement de version ──────────────────────
