@@ -1,0 +1,282 @@
+# .github/workflows/cargo-monorepo-release.yml
+# Reusable workflow for building Rust binaries from a mono-repo (Cargo workspace)
+
+name: Cargo Mono-Repo Build & Release
+
+on:
+  workflow_call:
+    inputs:
+      targets:
+        description: 'JSON array of targets: "windows", "linux", "macos"'
+        required: true
+        type: string
+      package_name:
+        description: 'Name of the package/crate to build (must match the folder name in the workspace)'
+        required: true
+        type: string
+      package_path:
+        description: 'Path to the package directory relative to repo root (e.g., "crates/my-app" or "packages/my-cli")'
+        required: true
+        type: string
+      binary_name:
+        description: 'Binary name if different from package name (defaults to package_name)'
+        required: false
+        type: string
+      publish_to_crate:
+        description: 'Force publishing to crates.io'
+        required: false
+        type: boolean
+      version:
+        description: 'Version to release (used as tag name, e.g. "1.2.3"). If omitted, extracted from package Cargo.toml.'
+        required: false
+        type: string
+      workspace_root:
+        description: 'Path to workspace root if different from repo root (defaults to ".")'
+        required: false
+        type: string
+        default: '.'
+      run_tests:
+        description: 'Run tests before building (defaults to true)'
+        required: false
+        type: boolean
+        default: true
+      run_clippy:
+        description: 'Run clippy checks (defaults to false)'
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      CARGO_REGISTRY_TOKEN:
+        description: 'crates.io token (optional)'
+        required: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      package_name: ${{ steps.pkg.outputs.name }}
+      binary_name: ${{ steps.pkg.outputs.binary_name }}
+      version: ${{ steps.ver.outputs.version }}
+      should_publish: ${{ steps.check-token.outputs.should_publish }}
+      tag_name: ${{ steps.tag.outputs.tag_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine version
+        id: ver
+        run: |
+          CARGO_PATH="${{ inputs.package_path }}/Cargo.toml"
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            VER=$(grep -m1 '^version' "$CARGO_PATH" | sed 's/version *= *"\(.*\)"/\1/')
+            echo "version=$VER" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Determine package and binary name
+        id: pkg
+        run: |
+          echo "name=${{ inputs.package_name }}" >> "$GITHUB_OUTPUT"
+          if [ -n "${{ inputs.binary_name }}" ]; then
+            echo "binary_name=${{ inputs.binary_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "binary_name=${{ inputs.package_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build tag name
+        id: tag
+        run: |
+          # Use format: package_name-vX.Y.Z for mono-repo tags
+          TAG="${{ inputs.package_name }}-v${{ steps.ver.outputs.version }}"
+          echo "tag_name=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Check if should publish to crates.io
+        id: check-token
+        run: |
+          if [ -n "${{ secrets.CARGO_REGISTRY_TOKEN }}" ]; then
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build target matrix
+        id: set-matrix
+        run: |
+          TARGETS='${{ inputs.targets }}'
+          MATRIX="["
+          FIRST=true
+
+          for target in $(echo "$TARGETS" | jq -r '.[]'); do
+            case "$target" in
+              windows)
+                [ "$FIRST" = true ] && FIRST=false || MATRIX+=","
+                MATRIX+='{"target":"x86_64-pc-windows-msvc","os":"windows-latest","ext":".exe"}'
+                ;;
+              linux)
+                [ "$FIRST" = true ] && FIRST=false || MATRIX+=","
+                MATRIX+='{"target":"x86_64-unknown-linux-gnu","os":"ubuntu-latest","ext":""}'
+                ;;
+              macos)
+                [ "$FIRST" = true ] && FIRST=false || MATRIX+=","
+                MATRIX+='{"target":"aarch64-apple-darwin","os":"macos-latest","ext":""}'
+                ;;
+              macos-x86)
+                [ "$FIRST" = true ] && FIRST=false || MATRIX+=","
+                MATRIX+='{"target":"x86_64-apple-darwin","os":"macos-latest","ext":""}'
+                ;;
+              linux-arm)
+                [ "$FIRST" = true ] && FIRST=false || MATRIX+=","
+                MATRIX+='{"target":"aarch64-unknown-linux-gnu","os":"ubuntu-latest","ext":""}'
+                ;;
+            esac
+          done
+
+          MATRIX+="]"
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ inputs.workspace_root }}
+
+      - name: Format check
+        working-directory: ${{ inputs.workspace_root }}
+        run: cargo fmt --package ${{ inputs.package_name }} --check
+
+      - name: Clippy
+        if: inputs.run_clippy
+        working-directory: ${{ inputs.workspace_root }}
+        run: cargo clippy --package ${{ inputs.package_name }} -- -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    needs: check
+    if: inputs.run_tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ inputs.workspace_root }}
+
+      - name: Run tests
+        working-directory: ${{ inputs.workspace_root }}
+        run: cargo test --package ${{ inputs.package_name }} --all-features
+
+  build:
+    needs: [prepare, check]
+    # Run after test if tests are enabled, otherwise just after check
+    if: |
+      always() &&
+      needs.prepare.result == 'success' &&
+      needs.check.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools (Linux ARM)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ inputs.workspace_root }}
+          key: ${{ matrix.target }}
+
+      - name: Build release
+        working-directory: ${{ inputs.workspace_root }}
+        run: cargo build --release --package ${{ inputs.package_name }} --target ${{ matrix.target }}
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+
+      - name: Rename binary
+        shell: bash
+        run: |
+          BIN="${{ needs.prepare.outputs.binary_name }}"
+          SRC="${{ inputs.workspace_root }}/target/${{ matrix.target }}/release/${BIN}${{ matrix.ext }}"
+          DST="${BIN}-${{ matrix.target }}${{ matrix.ext }}"
+          cp "$SRC" "$DST"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.prepare.outputs.binary_name }}-${{ matrix.target }}
+          path: ${{ needs.prepare.outputs.binary_name }}-${{ matrix.target }}${{ matrix.ext }}
+
+  publish:
+    needs: [prepare, check, test]
+    if: |
+      always() &&
+      needs.prepare.result == 'success' &&
+      needs.check.result == 'success' &&
+      (needs.test.result == 'success' || needs.test.result == 'skipped') &&
+      (inputs.publish_to_crate || needs.prepare.outputs.should_publish == 'true')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ inputs.workspace_root }}
+
+      - name: Publish to crates.io
+        working-directory: ${{ inputs.workspace_root }}
+        run: cargo publish --package ${{ inputs.package_name }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  release:
+    needs: [prepare, build, test]
+    if: |
+      always() &&
+      needs.prepare.result == 'success' &&
+      needs.build.result == 'success' &&
+      (needs.test.result == 'success' || needs.test.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag_name }}
+          name: '${{ needs.prepare.outputs.package_name }} v${{ needs.prepare.outputs.version }}'
+          generate_release_notes: true
+          files: artifacts/*
