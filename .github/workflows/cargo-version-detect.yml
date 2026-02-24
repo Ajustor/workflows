@@ -1,6 +1,7 @@
 # .github/workflows/cargo-version-detect.yml
 # Reusable workflow that detects version changes in Cargo.toml
 # between the current commit and its parent.
+# Also supports triggering on tags (always returns version_changed=true for tags).
 
 name: Detect Cargo Version Change
 
@@ -22,6 +23,9 @@ on:
       previous_version:
         description: 'The previous version from Cargo.toml (empty if first commit or file did not exist)'
         value: ${{ jobs.detect.outputs.previous_version }}
+      is_tag:
+        description: 'Whether the workflow was triggered by a tag ("true" / "false")'
+        value: ${{ jobs.detect.outputs.is_tag }}
 
 jobs:
   detect:
@@ -30,6 +34,7 @@ jobs:
       version_changed: ${{ steps.version-check.outputs.changed }}
       new_version: ${{ steps.version-check.outputs.current }}
       previous_version: ${{ steps.version-check.outputs.previous }}
+      is_tag: ${{ steps.version-check.outputs.is_tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -39,6 +44,27 @@ jobs:
         id: version-check
         run: |
           CARGO_PATH="${{ inputs.cargo_toml_path }}"
+
+          # Check if this is a tag
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "🏷️  Tag detected: $GITHUB_REF"
+            echo "is_tag=true" >> "$GITHUB_OUTPUT"
+            
+            # Extract version from tag (remove 'v' prefix if present)
+            TAG_VERSION="${GITHUB_REF#refs/tags/}"
+            TAG_VERSION="${TAG_VERSION#v}"
+            
+            # Also get version from Cargo.toml
+            CURRENT=$(grep -m1 '^version' "$CARGO_PATH" | sed 's/version *= *"\(.*\)"/\1/')
+            
+            echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "previous=" >> "$GITHUB_OUTPUT"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "✅ Tag release - skipping version comparison"
+            exit 0
+          fi
+
+          echo "is_tag=false" >> "$GITHUB_OUTPUT"
 
           # Extract current version
           CURRENT=$(grep -m1 '^version' "$CARGO_PATH" | sed 's/version *= *"\(.*\)"/\1/')
