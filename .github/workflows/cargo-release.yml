@@ -179,8 +179,13 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Cargo login
+        run: cargo login
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
       - name: Publish to crates.io
-        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish
 
   release:
     needs: [prepare, build]
