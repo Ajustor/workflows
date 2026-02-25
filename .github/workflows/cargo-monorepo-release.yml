@@ -152,7 +152,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
+      - name: Install Linux dependencies
+        if: inputs.linux_apt_packages != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ inputs.linux_apt_packages }}
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -178,7 +182,11 @@ jobs:
     if: inputs.run_tests
     steps:
       - uses: actions/checkout@v4
-
+      - name: Install Linux dependencies
+        if: inputs.linux_apt_packages != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ inputs.linux_apt_packages }}
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
