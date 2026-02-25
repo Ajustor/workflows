@@ -135,10 +135,10 @@ jobs:
                 <h2>📦 Download</h2>
                 <ul class="download-list" id="downloads"></ul>
               </section>
-              # <section class="section" id="changelog-section">
-              #   <h2>📋 Changelog</h2>
-              #   <div class="changelog" id="changelog"></div>
-              # </section>
+              <section class="section" id="changelog-section">
+                <h2>📋 Changelog</h2>
+                <div class="changelog" id="changelog"></div>
+              </section>
               <footer id="footer">
                 <p>View on <a href="https://github.com/REPO_PLACEHOLDER/releases">GitHub Releases</a></p>
               </footer>
@@ -162,19 +162,19 @@ jobs:
                 list.appendChild(li);
               }
 
-              # // Render changelog
-              # const changelogContent = CHANGELOG_PLACEHOLDER;
-              # const changelogEl = document.getElementById('changelog');
-              # const changelogSection = document.getElementById('changelog-section');
-              # if (changelogContent && typeof changelogContent === 'string' && changelogContent.trim().length > 0) {
-              #   try {
-              #     changelogEl.innerHTML = marked.parse(changelogContent);
-              #   } catch (e) {
-              #     changelogSection.style.display = 'none';
-              #   }
-              # } else {
-              #   changelogSection.style.display = 'none';
-              # }
+              // Render changelog
+              const changelogContent = CHANGELOG_PLACEHOLDER;
+              const changelogEl = document.getElementById('changelog');
+              const changelogSection = document.getElementById('changelog-section');
+              if (changelogContent && typeof changelogContent === 'string' && changelogContent.trim().length > 0) {
+                try {
+                  changelogEl.innerHTML = marked.parse(changelogContent);
+                } catch (e) {
+                  changelogSection.style.display = 'none';
+                }
+              } else {
+                changelogSection.style.display = 'none';
+              }
 
               const isPublic = IS_REPO_PUBLIC_PLACEHOLDER;
               const footer = document.getElementById('footer');
@@ -189,20 +189,20 @@ jobs:
           # Replace placeholders
           FILELIST=$(ls public/ | grep -v index.html | jq -R -s -c 'split("\n") | map(select(length > 0))')
 
-          # # Safely encode changelog as JSON (handles newlines, quotes, special chars)
-          # # Check if changelog has actual content (not just whitespace/newlines)
-          # CHANGELOG_TRIMMED=$(printf '%s' "$CHANGELOG" | tr -d '[:space:]')
-          # if [ -n "$CHANGELOG_TRIMMED" ]; then
-          #   CHANGELOG_JSON=$(printf '%s' "$CHANGELOG" | jq -Rs '.')
-          # else
-          #   CHANGELOG_JSON='null'
-          # fi
+          # Safely encode changelog as JSON (handles newlines, quotes, special chars)
+          # Check if changelog has actual content (not just whitespace/newlines)
+          CHANGELOG_TRIMMED=$(printf '%s' "$CHANGELOG" | tr -d '[:space:]')
+          if [ -n "$CHANGELOG_TRIMMED" ]; then
+            CHANGELOG_JSON=$(printf '%s' "$CHANGELOG" | jq -Rs '.')
+          else
+            CHANGELOG_JSON='null'
+          fi
 
           sed -i "s|PACKAGE_NAME_PLACEHOLDER|${PACKAGE_NAME}|g" public/index.html
           sed -i "s|VERSION_PLACEHOLDER|${VERSION}|g" public/index.html
           sed -i "s|REPO_PLACEHOLDER|${GITHUB_REPOSITORY}|g" public/index.html
           sed -i "s|FILELIST_PLACEHOLDER|${FILELIST}|g" public/index.html
-          # sed -i "s|CHANGELOG_PLACEHOLDER|${CHANGELOG_JSON}|g" public/index.html
+          sed -i "s|CHANGELOG_PLACEHOLDER|${CHANGELOG_JSON}|g" public/index.html
           sed -i "s|IS_REPO_PUBLIC_PLACEHOLDER|${IS_REPO_PUBLIC}|g" public/index.html
 
       - name: Setup Pages
