@@ -163,11 +163,15 @@ jobs:
               }
 
               // Render changelog
-              const changelogContent = `CHANGELOG_PLACEHOLDER`;
+              const changelogContent = CHANGELOG_PLACEHOLDER;
               const changelogEl = document.getElementById('changelog');
               const changelogSection = document.getElementById('changelog-section');
-              if (changelogContent && changelogContent.trim()) {
-                changelogEl.innerHTML = marked.parse(changelogContent);
+              if (changelogContent && typeof changelogContent === 'string' && changelogContent.trim().length > 0) {
+                try {
+                  changelogEl.innerHTML = marked.parse(changelogContent);
+                } catch (e) {
+                  changelogSection.style.display = 'none';
+                }
               } else {
                 changelogSection.style.display = 'none';
               }
@@ -184,7 +188,13 @@ jobs:
 
           # Replace placeholders
           FILELIST=$(ls public/ | grep -v index.html | jq -R -s -c 'split("\n") | map(select(length > 0))')
-          CHANGELOG_JSON=$(echo "$CHANGELOG" | jq -R -s '.')
+
+          # Safely encode changelog as JSON (handles newlines, quotes, special chars)
+          if [ -n "$CHANGELOG" ] && [ "$(echo "$CHANGELOG" | tr -d '[:space:]')" != "" ]; then
+            CHANGELOG_JSON=$(printf '%s' "$CHANGELOG" | jq -Rs '.')
+          else
+            CHANGELOG_JSON='null'
+          fi
 
           sed -i "s|PACKAGE_NAME_PLACEHOLDER|${PACKAGE_NAME}|g" public/index.html
           sed -i "s|VERSION_PLACEHOLDER|${VERSION}|g" public/index.html
