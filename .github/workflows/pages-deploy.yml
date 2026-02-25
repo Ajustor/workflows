@@ -163,7 +163,7 @@ jobs:
               }
 
               // Render changelog
-              const changelogContent = CHANGELOG_PLACEHOLDER;
+              const changelogContent = `CHANGELOG_PLACEHOLDER`;
               const changelogEl = document.getElementById('changelog');
               const changelogSection = document.getElementById('changelog-section');
               if (changelogContent && changelogContent.trim()) {
