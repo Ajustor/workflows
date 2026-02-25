@@ -190,7 +190,9 @@ jobs:
           FILELIST=$(ls public/ | grep -v index.html | jq -R -s -c 'split("\n") | map(select(length > 0))')
 
           # Safely encode changelog as JSON (handles newlines, quotes, special chars)
-          if [ -n "$CHANGELOG" ] && [ "$(echo "$CHANGELOG" | tr -d '[:space:]')" != "" ]; then
+          # Check if changelog has actual content (not just whitespace/newlines)
+          CHANGELOG_TRIMMED=$(printf '%s' "$CHANGELOG" | tr -d '[:space:]')
+          if [ -n "$CHANGELOG_TRIMMED" ]; then
             CHANGELOG_JSON=$(printf '%s' "$CHANGELOG" | jq -Rs '.')
           else
             CHANGELOG_JSON='null'
