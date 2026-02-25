@@ -1,0 +1,206 @@
+# .github/workflows/pages-deploy.yml
+# Reusable workflow for deploying a download page to GitHub Pages
+
+name: Deploy Download Page to GitHub Pages
+
+on:
+  workflow_call:
+    inputs:
+      package_name:
+        description: 'Name of the package to display on the download page'
+        required: true
+        type: string
+      version:
+        description: 'Version to display on the download page'
+        required: true
+        type: string
+      is_repo_public:
+        default: false
+        required: false
+        type: boolean
+      changelog:
+        description: 'Changelog content to display (supports markdown). If empty, fetches from GitHub Release notes.'
+        required: false
+        type: string
+
+jobs:
+  pages:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Fetch release notes from GitHub
+        id: release-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          VERSION: ${{ inputs.version }}
+          INPUT_CHANGELOG: ${{ inputs.changelog }}
+        run: |
+          if [ -n "$INPUT_CHANGELOG" ]; then
+            # Use provided changelog
+            echo "changelog<<EOF" >> "$GITHUB_OUTPUT"
+            echo "$INPUT_CHANGELOG" >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
+          else
+            # Fetch from GitHub Release API
+            RELEASE_NOTES=$(curl -s -H "Authorization: token $GH_TOKEN" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/v${VERSION}" \
+              | jq -r '.body // empty' 2>/dev/null || echo "")
+            
+            if [ -z "$RELEASE_NOTES" ]; then
+              # Try without 'v' prefix
+              RELEASE_NOTES=$(curl -s -H "Authorization: token $GH_TOKEN" \
+                "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${VERSION}" \
+                | jq -r '.body // empty' 2>/dev/null || echo "")
+            fi
+            
+            echo "changelog<<EOF" >> "$GITHUB_OUTPUT"
+            echo "$RELEASE_NOTES" >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build download page
+        env:
+          PACKAGE_NAME: ${{ inputs.package_name }}
+          VERSION: ${{ inputs.version }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          CHANGELOG: ${{ steps.release-notes.outputs.changelog }}
+          IS_REPO_PUBLIC: ${{ inputs.is_repo_public }}
+        run: |
+          mkdir -p public
+
+          # Copy binaries to public folder
+          cp artifacts/* public/ 2>/dev/null || true
+
+          # Generate download page
+          cat > public/index.html << 'HTMLEOF'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>PACKAGE_NAME_PLACEHOLDER - Downloads</title>
+            <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+            <style>
+              * { box-sizing: border-box; margin: 0; padding: 0; }
+              body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); min-height: 100vh; color: #e4e4e4; }
+              .container { max-width: 800px; margin: 0 auto; padding: 2rem; }
+              header { text-align: center; padding: 3rem 0; }
+              h1 { font-size: 2.5rem; margin-bottom: 0.5rem; background: linear-gradient(90deg, #00d9ff, #00ff88); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+              .version { color: #888; font-size: 1.1rem; }
+              .section { background: rgba(255,255,255,0.05); border-radius: 12px; padding: 2rem; margin-top: 2rem; }
+              .section h2 { margin-bottom: 1.5rem; color: #00d9ff; }
+              .download-list { list-style: none; }
+              .download-item { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; margin-bottom: 1rem; transition: all 0.2s; }
+              .download-item:hover { background: rgba(255,255,255,0.08); border-color: #00d9ff; }
+              .download-link { display: flex; align-items: center; padding: 1rem 1.5rem; color: #e4e4e4; text-decoration: none; }
+              .platform { font-weight: 600; flex: 1; }
+              .filename { color: #888; font-size: 0.9rem; }
+              .icon { font-size: 1.5rem; margin-right: 1rem; }
+              .changelog { line-height: 1.6; }
+              .changelog h1, .changelog h2, .changelog h3 { color: #00d9ff; margin: 1.5rem 0 0.75rem 0; }
+              .changelog h1:first-child, .changelog h2:first-child, .changelog h3:first-child { margin-top: 0; }
+              .changelog ul, .changelog ol { margin-left: 1.5rem; margin-bottom: 1rem; }
+              .changelog li { margin-bottom: 0.5rem; }
+              .changelog code { background: rgba(0,217,255,0.1); padding: 0.2rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
+              .changelog pre { background: rgba(0,0,0,0.3); padding: 1rem; border-radius: 8px; overflow-x: auto; margin: 1rem 0; }
+              .changelog pre code { background: none; padding: 0; }
+              .changelog a { color: #00d9ff; }
+              .changelog p { margin-bottom: 1rem; }
+              .changelog blockquote { border-left: 3px solid #00d9ff; padding-left: 1rem; margin: 1rem 0; color: #aaa; }
+              footer { text-align: center; padding: 2rem 0; color: #666; font-size: 0.9rem; }
+              footer a { color: #00d9ff; text-decoration: none; }
+              .empty-changelog { color: #666; font-style: italic; }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <header>
+                <h1>PACKAGE_NAME_PLACEHOLDER</h1>
+                <p class="version">Version VERSION_PLACEHOLDER</p>
+              </header>
+              <section class="section">
+                <h2>📦 Download</h2>
+                <ul class="download-list" id="downloads"></ul>
+              </section>
+              <section class="section" id="changelog-section">
+                <h2>📋 Changelog</h2>
+                <div class="changelog" id="changelog"></div>
+              </section>
+              <footer id="footer">
+                <p>View on <a href="https://github.com/REPO_PLACEHOLDER/releases">GitHub Releases</a></p>
+              </footer>
+            </div>
+            <script>
+              const files = FILELIST_PLACEHOLDER;
+              const platforms = {
+                'x86_64-pc-windows-msvc': { name: 'Windows (x64)', icon: '🪟' },
+                'x86_64-unknown-linux-gnu': { name: 'Linux (x64)', icon: '🐧' },
+                'aarch64-unknown-linux-gnu': { name: 'Linux (ARM64)', icon: '🐧' },
+                'aarch64-apple-darwin': { name: 'macOS (Apple Silicon)', icon: '🍎' },
+                'x86_64-apple-darwin': { name: 'macOS (Intel)', icon: '🍎' }
+              };
+              const list = document.getElementById('downloads');
+              for (const file of files) {
+                const platform = Object.keys(platforms).find(p => file.includes(p)) || 'unknown';
+                const info = platforms[platform] || { name: 'Other', icon: '📁' };
+                const li = document.createElement('li');
+                li.className = 'download-item';
+                li.innerHTML = `<a href="${file}" class="download-link"><span class="icon">${info.icon}</span><span class="platform">${info.name}</span><span class="filename">${file}</span></a>`;
+                list.appendChild(li);
+              }
+
+              // Render changelog
+              const changelogContent = CHANGELOG_PLACEHOLDER;
+              const changelogEl = document.getElementById('changelog');
+              const changelogSection = document.getElementById('changelog-section');
+              if (changelogContent && changelogContent.trim()) {
+                changelogEl.innerHTML = marked.parse(changelogContent);
+              } else {
+                changelogSection.style.display = 'none';
+              }
+
+              const isPublic = IS_REPO_PUBLIC_PLACEHOLDER;
+              const footer = document.getElementById('footer');
+              if (!isPublic) {
+                footer.style.display = 'none';
+              }
+            </script>
+          </body>
+          </html>
+          HTMLEOF
+
+          # Replace placeholders
+          FILELIST=$(ls public/ | grep -v index.html | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          CHANGELOG_JSON=$(echo "$CHANGELOG" | jq -R -s '.')
+
+          sed -i "s|PACKAGE_NAME_PLACEHOLDER|${PACKAGE_NAME}|g" public/index.html
+          sed -i "s|VERSION_PLACEHOLDER|${VERSION}|g" public/index.html
+          sed -i "s|REPO_PLACEHOLDER|${GITHUB_REPOSITORY}|g" public/index.html
+          sed -i "s|FILELIST_PLACEHOLDER|${FILELIST}|g" public/index.html
+          sed -i "s|CHANGELOG_PLACEHOLDER|${CHANGELOG_JSON}|g" public/index.html
+          sed -i "s|IS_REPO_PUBLIC_PLACEHOLDER|${IS_REPO_PUBLIC}|g" public/index.html
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
