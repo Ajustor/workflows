@@ -1,0 +1,436 @@
+# .github/workflows/bevy-android-release.yml
+# Reusable workflow for building Bevy games for Android
+
+name: Bevy Android Build & Release
+
+on:
+  workflow_call:
+    inputs:
+      package_name:
+        description: 'Name of the package/crate to build'
+        required: true
+        type: string
+      package_path:
+        description: 'Path to the package directory relative to repo root (defaults to ".")'
+        required: false
+        type: string
+        default: '.'
+      app_name:
+        description: 'Display name of the Android app'
+        required: true
+        type: string
+      app_id:
+        description: 'Android application ID (e.g., "com.example.mygame")'
+        required: true
+        type: string
+      version:
+        description: 'Version to release (e.g., "1.0.0"). If omitted, extracted from Cargo.toml.'
+        required: false
+        type: string
+      version_code:
+        description: 'Android version code (integer). If omitted, auto-generated from version.'
+        required: false
+        type: string
+      target_sdk:
+        description: 'Android target SDK version (defaults to 34)'
+        required: false
+        type: string
+        default: '34'
+      min_sdk:
+        description: 'Android minimum SDK version (defaults to 24)'
+        required: false
+        type: string
+        default: '24'
+      android_targets:
+        description: 'JSON array of Android targets: "arm64", "arm", "x86_64" (defaults to ["arm64"])'
+        required: false
+        type: string
+        default: '["arm64"]'
+      features:
+        description: 'Cargo features to enable (comma-separated)'
+        required: false
+        type: string
+      icon_path:
+        description: 'Path to app icon (512x512 PNG recommended)'
+        required: false
+        type: string
+      build_type:
+        description: 'Build type: "debug" or "release" (defaults to "release")'
+        required: false
+        type: string
+        default: 'release'
+      sign_apk:
+        description: 'Sign the APK with provided keystore (defaults to false)'
+        required: false
+        type: boolean
+        default: false
+      deploy_pages:
+        description: 'Deploy download page to GitHub Pages (defaults to false)'
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      KEYSTORE_BASE64:
+        description: 'Base64-encoded keystore file for signing'
+        required: false
+      KEYSTORE_PASSWORD:
+        description: 'Keystore password'
+        required: false
+      KEY_ALIAS:
+        description: 'Key alias in the keystore'
+        required: false
+      KEY_PASSWORD:
+        description: 'Key password'
+        required: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      version_code: ${{ steps.ver.outputs.version_code }}
+      matrix: ${{ steps.matrix.outputs.targets }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine version
+        id: ver
+        run: |
+          CARGO_PATH="${{ inputs.package_path }}/Cargo.toml"
+          if [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION=$(grep -m1 '^version' "$CARGO_PATH" | sed 's/version *= *"\(.*\)"/\1/')
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          # Generate version code from version if not provided
+          if [ -n "${{ inputs.version_code }}" ]; then
+            echo "version_code=${{ inputs.version_code }}" >> "$GITHUB_OUTPUT"
+          else
+            # Convert version to version code (e.g., 1.2.3 -> 10203)
+            MAJOR=$(echo "$VERSION" | cut -d. -f1)
+            MINOR=$(echo "$VERSION" | cut -d. -f2)
+            PATCH=$(echo "$VERSION" | cut -d. -f3 | cut -d- -f1)
+            VERSION_CODE=$((MAJOR * 10000 + MINOR * 100 + PATCH))
+            echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build target matrix
+        id: matrix
+        run: |
+          TARGETS='${{ inputs.android_targets }}'
+          MATRIX="["
+          FIRST=true
+
+          for target in $(echo "$TARGETS" | jq -r '.[]'); do
+            case "$target" in
+              arm64)
+                [ "$FIRST" = true ] && FIRST=false || MATRIX+=","
+                MATRIX+='{"target":"aarch64-linux-android","arch":"arm64-v8a","ndk_abi":"arm64"}'
+                ;;
+              arm)
+                [ "$FIRST" = true ] && FIRST=false || MATRIX+=","
+                MATRIX+='{"target":"armv7-linux-androideabi","arch":"armeabi-v7a","ndk_abi":"arm"}'
+                ;;
+              x86_64)
+                [ "$FIRST" = true ] && FIRST=false || MATRIX+=","
+                MATRIX+='{"target":"x86_64-linux-android","arch":"x86_64","ndk_abi":"x86_64"}'
+                ;;
+            esac
+          done
+
+          MATRIX+="]"
+          echo "targets=$MATRIX" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: |
+          sdkmanager --install "ndk;25.2.9519653"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/25.2.9519653" >> "$GITHUB_ENV"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/25.2.9519653" >> "$GITHUB_ENV"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: android-${{ matrix.target }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libudev-dev pkg-config
+
+      - name: Build for Android
+        working-directory: ${{ inputs.package_path }}
+        env:
+          CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: ${{ env.ANDROID_NDK_HOME }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${{ inputs.min_sdk }}-clang
+          CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER: ${{ env.ANDROID_NDK_HOME }}/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi${{ inputs.min_sdk }}-clang
+          CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER: ${{ env.ANDROID_NDK_HOME }}/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android${{ inputs.min_sdk }}-clang
+        run: |
+          BUILD_TYPE="${{ inputs.build_type }}"
+          FEATURES="${{ inputs.features }}"
+
+          if [ "$BUILD_TYPE" = "release" ]; then
+            RELEASE_FLAG="--release"
+          else
+            RELEASE_FLAG=""
+          fi
+
+          if [ -n "$FEATURES" ]; then
+            FEATURES_FLAG="--features $FEATURES"
+          else
+            FEATURES_FLAG=""
+          fi
+
+          cargo ndk -t ${{ matrix.arch }} -o ./jniLibs build $RELEASE_FLAG $FEATURES_FLAG
+
+      - name: Create Android project structure
+        run: |
+          mkdir -p android-build/app/src/main/jniLibs/${{ matrix.arch }}
+          mkdir -p android-build/app/src/main/res/mipmap-xxxhdpi
+
+          # Copy the built library
+          BUILD_TYPE="${{ inputs.build_type }}"
+          LIB_NAME="lib${{ inputs.package_name }}.so"
+
+          if [ "$BUILD_TYPE" = "release" ]; then
+            cp "${{ inputs.package_path }}/jniLibs/${{ matrix.arch }}/$LIB_NAME" \
+               "android-build/app/src/main/jniLibs/${{ matrix.arch }}/"
+          else
+            cp "${{ inputs.package_path }}/jniLibs/${{ matrix.arch }}/$LIB_NAME" \
+               "android-build/app/src/main/jniLibs/${{ matrix.arch }}/"
+          fi
+
+          # Copy icon if provided
+          if [ -n "${{ inputs.icon_path }}" ] && [ -f "${{ inputs.icon_path }}" ]; then
+            cp "${{ inputs.icon_path }}" android-build/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+          fi
+
+      - name: Generate AndroidManifest.xml
+        run: |
+          cat > android-build/app/src/main/AndroidManifest.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+              package="${{ inputs.app_id }}"
+              android:versionCode="${{ needs.prepare.outputs.version_code }}"
+              android:versionName="${{ needs.prepare.outputs.version }}">
+
+              <uses-sdk
+                  android:minSdkVersion="${{ inputs.min_sdk }}"
+                  android:targetSdkVersion="${{ inputs.target_sdk }}" />
+
+              <uses-feature android:glEsVersion="0x00030000" android:required="true" />
+              <uses-feature android:name="android.hardware.vulkan.level" android:required="false" />
+              <uses-feature android:name="android.hardware.vulkan.version" android:required="false" />
+
+              <application
+                  android:label="${{ inputs.app_name }}"
+                  android:hasCode="false"
+                  android:icon="@mipmap/ic_launcher"
+                  android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
+
+                  <activity
+                      android:name="android.app.NativeActivity"
+                      android:exported="true"
+                      android:configChanges="orientation|keyboardHidden|screenSize"
+                      android:screenOrientation="landscape">
+
+                      <meta-data
+                          android:name="android.app.lib_name"
+                          android:value="${{ inputs.package_name }}" />
+
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+      - name: Generate build.gradle
+        run: |
+          # Root build.gradle
+          cat > android-build/build.gradle << 'EOF'
+          buildscript {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+              dependencies {
+                  classpath 'com.android.tools.build:gradle:8.2.0'
+              }
+          }
+
+          allprojects {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          EOF
+
+          # App build.gradle
+          cat > android-build/app/build.gradle << EOF
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace '${{ inputs.app_id }}'
+              compileSdk ${{ inputs.target_sdk }}
+
+              defaultConfig {
+                  applicationId "${{ inputs.app_id }}"
+                  minSdk ${{ inputs.min_sdk }}
+                  targetSdk ${{ inputs.target_sdk }}
+                  versionCode ${{ needs.prepare.outputs.version_code }}
+                  versionName "${{ needs.prepare.outputs.version }}"
+                  ndk {
+                      abiFilters '${{ matrix.arch }}'
+                  }
+              }
+
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                  }
+              }
+
+              sourceSets {
+                  main {
+                      jniLibs.srcDirs = ['src/main/jniLibs']
+                  }
+              }
+          }
+          EOF
+
+          # settings.gradle
+          cat > android-build/settings.gradle << 'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          rootProject.name = "${{ inputs.package_name }}"
+          include ':app'
+          EOF
+
+          # gradle.properties
+          cat > android-build/gradle.properties << 'EOF'
+          android.useAndroidX=true
+          org.gradle.jvmargs=-Xmx2048m
+          EOF
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Build APK
+        working-directory: android-build
+        run: |
+          BUILD_TYPE="${{ inputs.build_type }}"
+          if [ "$BUILD_TYPE" = "release" ]; then
+            ./gradlew assembleRelease --no-daemon
+            APK_PATH="app/build/outputs/apk/release/app-release-unsigned.apk"
+          else
+            ./gradlew assembleDebug --no-daemon
+            APK_PATH="app/build/outputs/apk/debug/app-debug.apk"
+          fi
+
+          echo "APK_PATH=$APK_PATH" >> "$GITHUB_ENV"
+
+      - name: Sign APK
+        if: inputs.sign_apk && inputs.build_type == 'release'
+        run: |
+          # Decode keystore
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > keystore.jks
+
+          # Sign the APK
+          $ANDROID_HOME/build-tools/34.0.0/apksigner sign \
+            --ks keystore.jks \
+            --ks-pass pass:${{ secrets.KEYSTORE_PASSWORD }} \
+            --ks-key-alias ${{ secrets.KEY_ALIAS }} \
+            --key-pass pass:${{ secrets.KEY_PASSWORD }} \
+            --out "android-build/app-signed.apk" \
+            "android-build/${{ env.APK_PATH }}"
+
+          echo "APK_PATH=app-signed.apk" >> "$GITHUB_ENV"
+          rm keystore.jks
+
+      - name: Rename APK
+        run: |
+          BUILD_TYPE="${{ inputs.build_type }}"
+          VERSION="${{ needs.prepare.outputs.version }}"
+
+          if [ "${{ inputs.sign_apk }}" = "true" ] && [ "$BUILD_TYPE" = "release" ]; then
+            SRC="android-build/app-signed.apk"
+          else
+            SRC="android-build/${{ env.APK_PATH }}"
+          fi
+
+          DST="${{ inputs.package_name }}-v${VERSION}-${{ matrix.arch }}.apk"
+          cp "$SRC" "$DST"
+
+          echo "FINAL_APK=$DST" >> "$GITHUB_ENV"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.package_name }}-${{ matrix.arch }}
+          path: ${{ env.FINAL_APK }}
+
+  release:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.prepare.outputs.version }}
+          name: '${{ inputs.app_name }} v${{ needs.prepare.outputs.version }}'
+          generate_release_notes: true
+          files: artifacts/*
+
+  pages:
+    needs: [prepare, release]
+    if: inputs.deploy_pages
+    uses: Ajustor/workflows/.github/workflows/pages-deploy.yml@master
+    with:
+      package_name: ${{ inputs.app_name }}
+      version: ${{ needs.prepare.outputs.version }}
