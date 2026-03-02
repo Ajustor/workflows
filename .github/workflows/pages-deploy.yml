@@ -215,6 +215,17 @@ jobs:
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
+      - name: Delete existing github-pages artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ARTIFACT_ID=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
+            --jq '.artifacts[] | select(.name=="github-pages") | .id' 2>/dev/null || true)
+          if [ -n "$ARTIFACT_ID" ]; then
+            echo "Deleting existing github-pages artifact (ID: $ARTIFACT_ID)..."
+            gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$ARTIFACT_ID" || true
+          fi
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
