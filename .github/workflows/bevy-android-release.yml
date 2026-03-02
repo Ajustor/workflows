@@ -1,11 +1,15 @@
 # .github/workflows/bevy-android-release.yml
 # Reusable workflow for building Bevy games for Android
+# Supports two build systems:
+#   - "gradle"  (default): cargo-ndk + Gradle
+#   - "xbuild": xbuild + aapt2 resource injection
 
 name: Bevy Android Build & Release
 
 on:
   workflow_call:
     inputs:
+      # ── Common inputs ─────────────────────────────────────────
       package_name:
         description: 'Name of the package/crate to build'
         required: true
@@ -20,8 +24,8 @@ on:
         required: true
         type: string
       app_id:
-        description: 'Android application ID (e.g., "com.example.mygame")'
-        required: true
+        description: 'Android application ID (e.g., "com.example.mygame"). Required for gradle mode.'
+        required: false
         type: string
       version:
         description: 'Version to release (e.g., "1.0.0"). If omitted, extracted from Cargo.toml.'
@@ -50,17 +54,18 @@ on:
         description: 'Cargo features to enable (comma-separated)'
         required: false
         type: string
-      icon_path:
-        description: 'Path to app icon (512x512 PNG recommended)'
-        required: false
-        type: string
       build_type:
         description: 'Build type: "debug" or "release" (defaults to "release")'
         required: false
         type: string
         default: 'release'
+      build_system:
+        description: 'Build system: "gradle" (cargo-ndk + Gradle) or "xbuild" (xbuild + aapt2). Defaults to "gradle".'
+        required: false
+        type: string
+        default: 'gradle'
       sign_apk:
-        description: 'Sign the APK with provided keystore (defaults to false)'
+        description: 'Sign the APK with provided keystore (defaults to false). In xbuild mode, a debug keystore is used when false.'
         required: false
         type: boolean
         default: false
@@ -69,6 +74,37 @@ on:
         required: false
         type: boolean
         default: false
+
+      # ── Gradle-mode inputs ────────────────────────────────────
+      icon_path:
+        description: 'Path to app icon (512x512 PNG recommended). Gradle mode only.'
+        required: false
+        type: string
+
+      # ── xbuild-mode inputs ───────────────────────────────────
+      ndk_version:
+        description: 'Android NDK version (defaults to "25.2.9519653")'
+        required: false
+        type: string
+        default: '25.2.9519653'
+      build_tools_version:
+        description: 'Android build-tools version (defaults to "34.0.0")'
+        required: false
+        type: string
+        default: '34.0.0'
+      manifest_path:
+        description: 'Path to AndroidManifest.xml for aapt2 resource linking (xbuild mode)'
+        required: false
+        type: string
+      res_dir:
+        description: 'Path to Android res/ directory for resource injection (xbuild mode)'
+        required: false
+        type: string
+      inject_resources_script:
+        description: 'Path to resource injection script (xbuild mode)'
+        required: false
+        type: string
+
     secrets:
       KEYSTORE_BASE64:
         description: 'Base64-encoded keystore file for signing'
@@ -104,11 +140,9 @@ jobs:
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-          # Generate version code from version if not provided
           if [ -n "${{ inputs.version_code }}" ]; then
             echo "version_code=${{ inputs.version_code }}" >> "$GITHUB_OUTPUT"
           else
-            # Convert version to version code (e.g., 1.2.3 -> 10203)
             MAJOR=$(echo "$VERSION" | cut -d. -f1)
             MINOR=$(echo "$VERSION" | cut -d. -f2)
             PATCH=$(echo "$VERSION" | cut -d. -f3 | cut -d- -f1)
@@ -127,15 +161,15 @@ jobs:
             case "$target" in
               arm64)
                 [ "$FIRST" = true ] && FIRST=false || MATRIX+=","
-                MATRIX+='{"target":"aarch64-linux-android","arch":"arm64-v8a","ndk_abi":"arm64"}'
+                MATRIX+='{"target":"aarch64-linux-android","arch":"arm64-v8a","xbuild_arch":"arm64","ndk_abi":"arm64"}'
                 ;;
               arm)
                 [ "$FIRST" = true ] && FIRST=false || MATRIX+=","
-                MATRIX+='{"target":"armv7-linux-androideabi","arch":"armeabi-v7a","ndk_abi":"arm"}'
+                MATRIX+='{"target":"armv7-linux-androideabi","arch":"armeabi-v7a","xbuild_arch":"arm","ndk_abi":"arm"}'
                 ;;
               x86_64)
                 [ "$FIRST" = true ] && FIRST=false || MATRIX+=","
-                MATRIX+='{"target":"x86_64-linux-android","arch":"x86_64","ndk_abi":"x86_64"}'
+                MATRIX+='{"target":"x86_64-linux-android","arch":"x86_64","xbuild_arch":"x86_64","ndk_abi":"x86_64"}'
                 ;;
             esac
           done
@@ -162,19 +196,27 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android NDK
+      # ── SDK components (build system dependent) ──────────────
+      - name: Install Android SDK components (gradle)
+        if: inputs.build_system == 'gradle'
         run: |
-          sdkmanager --install "ndk;25.2.9519653"
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/25.2.9519653" >> "$GITHUB_ENV"
-          echo "NDK_HOME=$ANDROID_HOME/ndk/25.2.9519653" >> "$GITHUB_ENV"
+          sdkmanager --install "ndk;${{ inputs.ndk_version }}"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/${{ inputs.ndk_version }}" >> "$GITHUB_ENV"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/${{ inputs.ndk_version }}" >> "$GITHUB_ENV"
 
+      - name: Install Android SDK components (xbuild)
+        if: inputs.build_system == 'xbuild'
+        run: |
+          sdkmanager --install \
+            "platforms;android-${{ inputs.target_sdk }}" \
+            "build-tools;${{ inputs.build_tools_version }}" \
+            "ndk;${{ inputs.ndk_version }}"
+
+      # ── Rust toolchain ───────────────────────────────────────
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-
-      - name: Install cargo-ndk
-        run: cargo install cargo-ndk
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -186,7 +228,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libasound2-dev libudev-dev pkg-config
 
-      - name: Build for Android
+      # ══════════════════════════════════════════════════════════
+      # GRADLE BUILD PATH (cargo-ndk + Gradle)
+      # ══════════════════════════════════════════════════════════
+      - name: Install cargo-ndk
+        if: inputs.build_system == 'gradle'
+        run: cargo install cargo-ndk
+
+      - name: Build for Android (cargo-ndk)
+        if: inputs.build_system == 'gradle'
         working-directory: ${{ inputs.package_path }}
         env:
           CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: ${{ env.ANDROID_NDK_HOME }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${{ inputs.min_sdk }}-clang
@@ -211,28 +261,21 @@ jobs:
           cargo ndk -t ${{ matrix.arch }} -o ./jniLibs build $RELEASE_FLAG $FEATURES_FLAG
 
       - name: Create Android project structure
+        if: inputs.build_system == 'gradle'
         run: |
           mkdir -p android-build/app/src/main/jniLibs/${{ matrix.arch }}
           mkdir -p android-build/app/src/main/res/mipmap-xxxhdpi
 
-          # Copy the built library
-          BUILD_TYPE="${{ inputs.build_type }}"
           LIB_NAME="lib${{ inputs.package_name }}.so"
+          cp "${{ inputs.package_path }}/jniLibs/${{ matrix.arch }}/$LIB_NAME" \
+             "android-build/app/src/main/jniLibs/${{ matrix.arch }}/"
 
-          if [ "$BUILD_TYPE" = "release" ]; then
-            cp "${{ inputs.package_path }}/jniLibs/${{ matrix.arch }}/$LIB_NAME" \
-               "android-build/app/src/main/jniLibs/${{ matrix.arch }}/"
-          else
-            cp "${{ inputs.package_path }}/jniLibs/${{ matrix.arch }}/$LIB_NAME" \
-               "android-build/app/src/main/jniLibs/${{ matrix.arch }}/"
-          fi
-
-          # Copy icon if provided
           if [ -n "${{ inputs.icon_path }}" ] && [ -f "${{ inputs.icon_path }}" ]; then
             cp "${{ inputs.icon_path }}" android-build/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
           fi
 
       - name: Generate AndroidManifest.xml
+        if: inputs.build_system == 'gradle'
         run: |
           cat > android-build/app/src/main/AndroidManifest.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
@@ -274,9 +317,9 @@ jobs:
           </manifest>
           EOF
 
-      - name: Generate build.gradle
+      - name: Generate Gradle files
+        if: inputs.build_system == 'gradle'
         run: |
-          # Root build.gradle
           cat > android-build/build.gradle << 'EOF'
           buildscript {
               repositories {
@@ -287,7 +330,6 @@ jobs:
                   classpath 'com.android.tools.build:gradle:8.2.0'
               }
           }
-
           allprojects {
               repositories {
                   google()
@@ -296,16 +338,13 @@ jobs:
           }
           EOF
 
-          # App build.gradle
           cat > android-build/app/build.gradle << EOF
           plugins {
               id 'com.android.application'
           }
-
           android {
               namespace '${{ inputs.app_id }}'
               compileSdk ${{ inputs.target_sdk }}
-
               defaultConfig {
                   applicationId "${{ inputs.app_id }}"
                   minSdk ${{ inputs.min_sdk }}
@@ -316,13 +355,11 @@ jobs:
                       abiFilters '${{ matrix.arch }}'
                   }
               }
-
               buildTypes {
                   release {
                       minifyEnabled false
                   }
               }
-
               sourceSets {
                   main {
                       jniLibs.srcDirs = ['src/main/jniLibs']
@@ -331,7 +368,6 @@ jobs:
           }
           EOF
 
-          # settings.gradle
           cat > android-build/settings.gradle << 'EOF'
           pluginManagement {
               repositories {
@@ -344,16 +380,17 @@ jobs:
           include ':app'
           EOF
 
-          # gradle.properties
           cat > android-build/gradle.properties << 'EOF'
           android.useAndroidX=true
           org.gradle.jvmargs=-Xmx2048m
           EOF
 
       - name: Setup Gradle
+        if: inputs.build_system == 'gradle'
         uses: gradle/actions/setup-gradle@v3
 
-      - name: Build APK
+      - name: Build APK (Gradle)
+        if: inputs.build_system == 'gradle'
         working-directory: android-build
         run: |
           BUILD_TYPE="${{ inputs.build_type }}"
@@ -364,41 +401,122 @@ jobs:
             ./gradlew assembleDebug --no-daemon
             APK_PATH="app/build/outputs/apk/debug/app-debug.apk"
           fi
+          echo "APK_PATH=android-build/$APK_PATH" >> "$GITHUB_ENV"
 
-          echo "APK_PATH=$APK_PATH" >> "$GITHUB_ENV"
-
-      - name: Sign APK
-        if: inputs.sign_apk && inputs.build_type == 'release'
+      - name: Sign APK (Gradle)
+        if: inputs.build_system == 'gradle' && inputs.sign_apk && inputs.build_type == 'release'
         run: |
-          # Decode keystore
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > keystore.jks
-
-          # Sign the APK
-          $ANDROID_HOME/build-tools/34.0.0/apksigner sign \
+          $ANDROID_HOME/build-tools/${{ inputs.build_tools_version }}/apksigner sign \
             --ks keystore.jks \
             --ks-pass pass:${{ secrets.KEYSTORE_PASSWORD }} \
             --ks-key-alias ${{ secrets.KEY_ALIAS }} \
             --key-pass pass:${{ secrets.KEY_PASSWORD }} \
-            --out "android-build/app-signed.apk" \
-            "android-build/${{ env.APK_PATH }}"
-
-          echo "APK_PATH=app-signed.apk" >> "$GITHUB_ENV"
+            --out "gradle-signed.apk" \
+            "${{ env.APK_PATH }}"
+          echo "APK_PATH=gradle-signed.apk" >> "$GITHUB_ENV"
           rm keystore.jks
 
-      - name: Rename APK
+      # ══════════════════════════════════════════════════════════
+      # XBUILD BUILD PATH (xbuild + aapt2)
+      # ══════════════════════════════════════════════════════════
+      - name: Install xbuild
+        if: inputs.build_system == 'xbuild'
+        run: cargo install xbuild
+
+      - name: Build with xbuild
+        if: inputs.build_system == 'xbuild'
         run: |
           BUILD_TYPE="${{ inputs.build_type }}"
-          VERSION="${{ needs.prepare.outputs.version }}"
-
-          if [ "${{ inputs.sign_apk }}" = "true" ] && [ "$BUILD_TYPE" = "release" ]; then
-            SRC="android-build/app-signed.apk"
+          if [ "$BUILD_TYPE" = "release" ]; then
+            x build -p ${{ inputs.package_name }} --release --platform android --arch ${{ matrix.xbuild_arch }}
           else
-            SRC="android-build/${{ env.APK_PATH }}"
+            x build -p ${{ inputs.package_name }} --platform android --arch ${{ matrix.xbuild_arch }}
           fi
 
-          DST="${{ inputs.package_name }}-v${VERSION}-${{ matrix.arch }}.apk"
-          cp "$SRC" "$DST"
+      - name: Convert AAB to signed APK (xbuild)
+        if: inputs.build_system == 'xbuild'
+        run: |
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/${{ inputs.build_tools_version }}"
+          ANDROID_JAR="$ANDROID_HOME/platforms/android-${{ inputs.target_sdk }}/android.jar"
+          BUILD_TYPE="${{ inputs.build_type }}"
+          BUILD_DIR="target/x/${BUILD_TYPE}/android"
 
+          AAB="${BUILD_DIR}/${{ inputs.package_name }}.aab"
+          APK_UNSIGNED="${BUILD_DIR}/${{ inputs.package_name }}-unsigned.apk"
+          APK_ALIGNED="${BUILD_DIR}/${{ inputs.package_name }}-aligned.apk"
+          APK="${BUILD_DIR}/${{ inputs.package_name }}.apk"
+
+          # Copy AAB as unsigned APK
+          cp "$AAB" "$APK_UNSIGNED"
+
+          # Inject resources if configured
+          if [ -n "${{ inputs.res_dir }}" ] && [ -n "${{ inputs.manifest_path }}" ]; then
+            rm -rf "${BUILD_DIR}/compiled_res" "${BUILD_DIR}/res-overlay.apk" "${BUILD_DIR}/res-tmp"
+            mkdir -p "${BUILD_DIR}/compiled_res"
+
+            "$BUILD_TOOLS/aapt2" compile --dir "${{ inputs.res_dir }}" -o "${BUILD_DIR}/compiled_res/"
+            "$BUILD_TOOLS/aapt2" link \
+              -I "$ANDROID_JAR" \
+              --manifest "${{ inputs.manifest_path }}" \
+              -o "${BUILD_DIR}/res-overlay.apk" \
+              ${BUILD_DIR}/compiled_res/*.flat
+
+            mkdir -p "${BUILD_DIR}/res-tmp"
+            cd "${BUILD_DIR}/res-tmp" && unzip -o ../res-overlay.apk && cd -
+
+            if [ -n "${{ inputs.inject_resources_script }}" ]; then
+              python3 "${{ inputs.inject_resources_script }}" "$APK_UNSIGNED" "${BUILD_DIR}/res-tmp"
+            fi
+
+            rm -rf "${BUILD_DIR}/compiled_res" "${BUILD_DIR}/res-overlay.apk" "${BUILD_DIR}/res-tmp"
+          fi
+
+          # Generate debug keystore if not signing with a provided one
+          if [ "${{ inputs.sign_apk }}" != "true" ]; then
+            KEYSTORE="${BUILD_DIR}/debug.keystore"
+            keytool -genkeypair \
+              -keystore "$KEYSTORE" \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Debug,O=Debug,C=US"
+            KS_PASS="android"
+            KS_ALIAS="androiddebugkey"
+            KEY_PASS="android"
+          else
+            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > "${BUILD_DIR}/release.keystore"
+            KEYSTORE="${BUILD_DIR}/release.keystore"
+            KS_PASS="${{ secrets.KEYSTORE_PASSWORD }}"
+            KS_ALIAS="${{ secrets.KEY_ALIAS }}"
+            KEY_PASS="${{ secrets.KEY_PASSWORD }}"
+          fi
+
+          # Zipalign
+          "$BUILD_TOOLS/zipalign" -f -p 4 "$APK_UNSIGNED" "$APK_ALIGNED"
+
+          # Sign
+          "$BUILD_TOOLS/apksigner" sign \
+            --ks "$KEYSTORE" \
+            --ks-pass "pass:$KS_PASS" \
+            --ks-key-alias "$KS_ALIAS" \
+            --key-pass "pass:$KEY_PASS" \
+            --out "$APK" \
+            "$APK_ALIGNED"
+
+          # Cleanup
+          rm -f "$APK_UNSIGNED" "$APK_ALIGNED" "${BUILD_DIR}/debug.keystore" "${BUILD_DIR}/release.keystore"
+          echo "APK_PATH=$APK" >> "$GITHUB_ENV"
+
+      # ══════════════════════════════════════════════════════════
+      # COMMON: rename & upload
+      # ══════════════════════════════════════════════════════════
+      - name: Rename APK
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          DST="${{ inputs.package_name }}-v${VERSION}-${{ matrix.arch }}.apk"
+          cp "${{ env.APK_PATH }}" "$DST"
           echo "FINAL_APK=$DST" >> "$GITHUB_ENV"
 
       - name: Upload APK artifact
@@ -419,7 +537,7 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: Create GitHub Release
+      - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.prepare.outputs.version }}
