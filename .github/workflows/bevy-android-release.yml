@@ -211,6 +211,10 @@ jobs:
             "platforms;android-${{ inputs.target_sdk }}" \
             "build-tools;${{ inputs.build_tools_version }}" \
             "ndk;${{ inputs.ndk_version }}"
+          NDK_HOME="$ANDROID_HOME/ndk/${{ inputs.ndk_version }}"
+          echo "ANDROID_NDK_HOME=$NDK_HOME" >> "$GITHUB_ENV"
+          echo "NDK_HOME=$NDK_HOME" >> "$GITHUB_ENV"
+          echo "$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
 
       # ── Rust toolchain ───────────────────────────────────────
       - name: Setup Rust
