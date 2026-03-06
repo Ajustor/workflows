@@ -268,20 +268,41 @@ jobs:
         if: inputs.build_system == 'gradle'
         run: |
           mkdir -p android-build/app/src/main/jniLibs/${{ matrix.arch }}
-          mkdir -p android-build/app/src/main/res/mipmap-xxxhdpi
 
           LIB_NAME="lib${{ inputs.package_name }}.so"
           cp "${{ inputs.package_path }}/jniLibs/${{ matrix.arch }}/$LIB_NAME" \
              "android-build/app/src/main/jniLibs/${{ matrix.arch }}/"
 
           if [ -n "${{ inputs.icon_path }}" ] && [ -f "${{ inputs.icon_path }}" ]; then
-            cp "${{ inputs.icon_path }}" android-build/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+            # Generate icons for all standard Android mipmap densities
+            declare -A DENSITIES=(
+              ["mipmap-mdpi"]=48
+              ["mipmap-hdpi"]=72
+              ["mipmap-xhdpi"]=96
+              ["mipmap-xxhdpi"]=144
+              ["mipmap-xxxhdpi"]=192
+            )
+            for BUCKET in "${!DENSITIES[@]}"; do
+              SIZE=${DENSITIES[$BUCKET]}
+              DIR="android-build/app/src/main/res/${BUCKET}"
+              mkdir -p "$DIR"
+              convert "${{ inputs.icon_path }}" -resize "${SIZE}x${SIZE}" "${DIR}/ic_launcher.png"
+            done
+            echo "HAS_ICON=true" >> "$GITHUB_ENV"
+          else
+            echo "HAS_ICON=false" >> "$GITHUB_ENV"
           fi
 
       - name: Generate AndroidManifest.xml
         if: inputs.build_system == 'gradle'
         run: |
-          cat > android-build/app/src/main/AndroidManifest.xml << 'EOF'
+          if [ "$HAS_ICON" = "true" ]; then
+            ICON_ATTR='android:icon="@mipmap/ic_launcher"'
+          else
+            ICON_ATTR=''
+          fi
+
+          cat > android-build/app/src/main/AndroidManifest.xml << EOF
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android"
               package="${{ inputs.app_id }}"
@@ -299,7 +320,7 @@ jobs:
               <application
                   android:label="${{ inputs.app_name }}"
                   android:hasCode="false"
-                  android:icon="@mipmap/ic_launcher"
+                  ${ICON_ATTR}
                   android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
 
                   <activity

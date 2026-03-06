@@ -263,3 +263,39 @@ Supposons un projet avec `Cargo.toml` version `1.0.0` :
    - (Optionnel) Publie le crate sur crates.io.
 
 Si la version **n'a pas changé** (ex: simple correction de typo), le job `release` est ignoré.
+
+
+## 📦 Déploiement Android (APK signé)
+
+Pour pouvoir installer les nouvelles versions de l'APK **sans désinstaller la précédente** (et donc conserver les sauvegardes), le workflow CI signe l'APK avec un keystore persistant.
+
+### Configuration des secrets GitHub requis
+
+Ajoutez les secrets suivants dans **Settings → Secrets and variables → Actions** de ce dépôt :
+
+| Secret | Description |
+|---|---|
+| `KEYSTORE_BASE64` | Contenu du fichier `.jks` / `.keystore` encodé en base64 |
+| `KEYSTORE_PASSWORD` | Mot de passe du keystore |
+| `KEY_ALIAS` | Alias de la clé dans le keystore |
+| `KEY_PASSWORD` | Mot de passe de la clé (peut être identique à `KEYSTORE_PASSWORD`) |
+
+### Générer un keystore (une seule fois)
+
+```bash
+keytool -genkey -v \
+  -keystore monster-battle-release.jks \
+  -keyalg RSA -keysize 2048 -validity 10000 \
+  -alias monster-battle \
+  -storepass <KEYSTORE_PASSWORD> \
+  -keypass <KEY_PASSWORD> \
+  -dname "CN=Monster Battle, O=Ajustor, C=FR"
+```
+
+Puis encoder en base64 pour le secret `KEYSTORE_BASE64` :
+
+```bash
+base64 -w 0 monster-battle-release.jks
+```
+
+> ⚠️ **Conservez précieusement ce fichier keystore.** Le perdre empêcherait toute mise à jour future de l'APK signé. Ne le committez jamais dans le dépôt.
