@@ -38,7 +38,7 @@ on:
 
 jobs:
   prepare:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
       package_name: ${{ steps.pkg.outputs.name }}
@@ -105,7 +105,7 @@ jobs:
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
 
   check:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -124,7 +124,7 @@ jobs:
       #   run: cargo clippy -- -D warnings
 
   test:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     needs: check
     steps:
       - uses: actions/checkout@v4
@@ -184,7 +184,7 @@ jobs:
   publish:
     needs: [prepare, test]
     if: inputs.publish_to_crate || needs.prepare.outputs.should_publish == true
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -201,7 +201,7 @@ jobs:
 
   release:
     needs: [prepare, build]
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
