@@ -29,7 +29,7 @@ on:
 
 jobs:
   detect:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     outputs:
       version_changed: ${{ steps.version-check.outputs.changed }}
       new_version: ${{ steps.version-check.outputs.current }}

@@ -65,7 +65,7 @@ on:
 
 jobs:
   prepare:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
       package_name: ${{ steps.pkg.outputs.name }}
@@ -128,7 +128,7 @@ jobs:
                 ;;
               linux)
                 [ "$FIRST" = true ] && FIRST=false || MATRIX+=","
-                MATRIX+='{"target":"x86_64-unknown-linux-gnu","os":"ubuntu-latest","ext":""}'
+                MATRIX+='{"target":"x86_64-unknown-linux-gnu","os":"self-hosted","ext":""}'
                 ;;
               macos)
                 [ "$FIRST" = true ] && FIRST=false || MATRIX+=","
@@ -140,7 +140,7 @@ jobs:
                 ;;
               linux-arm)
                 [ "$FIRST" = true ] && FIRST=false || MATRIX+=","
-                MATRIX+='{"target":"aarch64-unknown-linux-gnu","os":"ubuntu-latest","ext":""}'
+                MATRIX+='{"target":"aarch64-unknown-linux-gnu","os":"self-hosted","ext":""}'
                 ;;
             esac
           done
@@ -149,7 +149,7 @@ jobs:
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
 
   check:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - name: Install Linux dependencies
@@ -177,7 +177,7 @@ jobs:
         run: cargo clippy --package ${{ inputs.package_name }} -- -D warnings
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     needs: check
     if: inputs.run_tests
     steps:
@@ -265,7 +265,7 @@ jobs:
       needs.check.result == 'success' &&
       (needs.test.result == 'success' || needs.test.result == 'skipped') &&
       (inputs.publish_to_crate || needs.prepare.outputs.should_publish == 'true')
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
 
@@ -290,7 +290,7 @@ jobs:
       needs.prepare.result == 'success' &&
       needs.build.result == 'success' &&
       (needs.test.result == 'success' || needs.test.result == 'skipped')
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     permissions:
       contents: write
     steps:

@@ -121,7 +121,7 @@ on:
 
 jobs:
   prepare:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     outputs:
       version: ${{ steps.ver.outputs.version }}
       version_code: ${{ steps.ver.outputs.version_code }}
@@ -179,7 +179,7 @@ jobs:
 
   build:
     needs: prepare
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     strategy:
       fail-fast: false
       matrix:
@@ -552,7 +552,7 @@ jobs:
 
   release:
     needs: [prepare, build]
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     permissions:
       contents: write
     steps:
