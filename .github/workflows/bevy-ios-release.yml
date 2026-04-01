@@ -1,0 +1,398 @@
+# .github/workflows/bevy-ios-release.yml
+# Reusable workflow for building Bevy/Rust games for iOS
+# Uses cargo-xcode to generate the Xcode project, then xcodebuild to archive/export
+#
+# Signing modes (sign_ipa input):
+#   false (default) — auto-generates a self-signed debug certificate; produces a
+#                     debug .ipa usable with AltStore/Sideloadly or on jailbroken devices
+#   true            — uses your Apple Developer credentials; produces a distributable
+#                     .ipa ready for TestFlight or Ad-hoc/App Store distribution
+#
+# Required secrets for sign_ipa: true only:
+#   APPLE_CERTIFICATE_P12_BASE64      — base64-encoded .p12 distribution certificate
+#   APPLE_CERTIFICATE_PASSWORD        — password for the .p12 file
+#   APPLE_PROVISIONING_PROFILE_BASE64 — base64-encoded .mobileprovision file
+#   APPLE_TEAM_ID                     — Apple Developer Team ID (10-char string)
+
+name: Bevy iOS Build & Release
+
+on:
+  workflow_call:
+    inputs:
+      # ── Common inputs ──────────────────────────────────────────
+      package_name:
+        description: 'Name of the package/crate to build'
+        required: true
+        type: string
+      package_path:
+        description: 'Path to the package directory relative to repo root (defaults to ".")'
+        required: false
+        type: string
+        default: '.'
+      app_name:
+        description: 'Display name of the iOS app'
+        required: true
+        type: string
+      bundle_id:
+        description: 'iOS bundle identifier (e.g., "com.example.mygame")'
+        required: true
+        type: string
+      version:
+        description: 'Version to release (e.g., "1.0.0"). If omitted, extracted from Cargo.toml.'
+        required: false
+        type: string
+      ios_targets:
+        description: 'JSON array of targets: "device", "simulator" (defaults to ["device"])'
+        required: false
+        type: string
+        default: '["device"]'
+      features:
+        description: 'Cargo features to enable (comma-separated)'
+        required: false
+        type: string
+      build_type:
+        description: 'Build type: "debug" or "release" (defaults to "release")'
+        required: false
+        type: string
+        default: 'release'
+
+      # ── Signing inputs ─────────────────────────────────────────
+      sign_ipa:
+        description: 'Sign with Apple Developer certificate (defaults to false). When false, a self-signed debug certificate is auto-generated.'
+        required: false
+        type: boolean
+        default: false
+      export_method:
+        description: 'IPA export method: "ad-hoc", "app-store", "development" (defaults to "ad-hoc")'
+        required: false
+        type: string
+        default: 'ad-hoc'
+
+      # ── Pages ──────────────────────────────────────────────────
+      deploy_pages:
+        description: 'Deploy download page to GitHub Pages (defaults to false)'
+        required: false
+        type: boolean
+        default: false
+
+    secrets:
+      APPLE_CERTIFICATE_P12_BASE64:
+        description: 'Base64-encoded .p12 certificate for signing'
+        required: false
+      APPLE_CERTIFICATE_PASSWORD:
+        description: 'Password for the .p12 certificate'
+        required: false
+      APPLE_PROVISIONING_PROFILE_BASE64:
+        description: 'Base64-encoded .mobileprovision provisioning profile'
+        required: false
+      APPLE_TEAM_ID:
+        description: 'Apple Developer Team ID'
+        required: false
+
+jobs:
+  prepare:
+    runs-on: macos-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      version_code: ${{ steps.ver.outputs.version_code }}
+      matrix: ${{ steps.matrix.outputs.targets }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine version
+        id: ver
+        run: |
+          CARGO_PATH="${{ inputs.package_path }}/Cargo.toml"
+          if [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION=$(grep -m1 '^version' "$CARGO_PATH" | sed 's/version *= *"\(.*\)"/\1/')
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          MAJOR=$(echo "$VERSION" | cut -d. -f1)
+          MINOR=$(echo "$VERSION" | cut -d. -f2)
+          PATCH=$(echo "$VERSION" | cut -d. -f3 | cut -d- -f1)
+          echo "version_code=$((MAJOR * 10000 + MINOR * 100 + PATCH))" >> "$GITHUB_OUTPUT"
+
+      - name: Build target matrix
+        id: matrix
+        run: |
+          TARGETS='${{ inputs.ios_targets }}'
+          MATRIX="["
+          FIRST=true
+
+          for target in $(echo "$TARGETS" | jq -r '.[]'); do
+            case "$target" in
+              device)
+                [ "$FIRST" = true ] && FIRST=false || MATRIX+=","
+                MATRIX+='{"target":"aarch64-apple-ios","label":"device","destination":"generic/platform=iOS"}'
+                ;;
+              simulator)
+                [ "$FIRST" = true ] && FIRST=false || MATRIX+=","
+                MATRIX+='{"target":"aarch64-apple-ios-sim","label":"simulator","destination":"generic/platform=iOS Simulator"}'
+                ;;
+            esac
+          done
+
+          MATRIX+="]"
+          echo "targets=$MATRIX" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ios-${{ matrix.target }}
+
+      - name: Install cargo-xcode
+        run: cargo install cargo-xcode
+
+      - name: Build Rust library
+        working-directory: ${{ inputs.package_path }}
+        run: |
+          BUILD_TYPE="${{ inputs.build_type }}"
+          FEATURES="${{ inputs.features }}"
+
+          FLAGS="--target ${{ matrix.target }}"
+          [ "$BUILD_TYPE" = "release" ] && FLAGS="$FLAGS --release"
+          [ -n "$FEATURES" ] && FLAGS="$FLAGS --features $FEATURES"
+
+          cargo build $FLAGS
+
+      - name: Generate Xcode project
+        working-directory: ${{ inputs.package_path }}
+        run: cargo xcode
+
+      # ══════════════════════════════════════════════════════════
+      # SIGNING SETUP (device + sign_ipa only)
+      # ══════════════════════════════════════════════════════════
+      - name: Setup signing keychain
+        if: inputs.sign_ipa && matrix.label == 'device'
+        env:
+          CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+          echo "KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> "$GITHUB_ENV"
+
+          echo "$CERTIFICATE_P12" | base64 -d > certificate.p12
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+
+          security import certificate.p12 -k build.keychain \
+            -P "$CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/xcodebuild
+          security set-key-partition-list -S apple-tool:,apple: -s \
+            -k "$KEYCHAIN_PASSWORD" build.keychain
+
+          rm certificate.p12
+
+      - name: Install provisioning profile
+        if: inputs.sign_ipa && matrix.label == 'device'
+        env:
+          PROVISIONING_PROFILE: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          PP_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$PP_DIR"
+          echo "$PROVISIONING_PROFILE" | base64 -d > "$PP_DIR/profile.mobileprovision"
+
+      # ══════════════════════════════════════════════════════════
+      # DEVICE BUILD
+      # ══════════════════════════════════════════════════════════
+      - name: Archive app (device, signed)
+        if: matrix.label == 'device' && inputs.sign_ipa
+        working-directory: ${{ inputs.package_path }}
+        run: |
+          CONFIG=$([ "${{ inputs.build_type }}" = "release" ] && echo "Release" || echo "Debug")
+
+          xcodebuild archive \
+            -project "${{ inputs.package_name }}.xcodeproj" \
+            -scheme "${{ inputs.package_name }}" \
+            -configuration "$CONFIG" \
+            -destination "${{ matrix.destination }}" \
+            -archivePath "../build/${{ inputs.package_name }}.xcarchive" \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM="${{ secrets.APPLE_TEAM_ID }}" \
+            PRODUCT_BUNDLE_IDENTIFIER="${{ inputs.bundle_id }}"
+
+      - name: Export IPA (device, signed)
+        if: matrix.label == 'device' && inputs.sign_ipa
+        working-directory: ${{ inputs.package_path }}
+        run: |
+          cat > ../ExportOptions.plist << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>${{ inputs.export_method }}</string>
+            <key>teamID</key>
+            <string>${{ secrets.APPLE_TEAM_ID }}</string>
+            <key>signingStyle</key>
+            <string>manual</string>
+          </dict>
+          </plist>
+          EOF
+
+          xcodebuild -exportArchive \
+            -archivePath "../build/${{ inputs.package_name }}.xcarchive" \
+            -exportOptionsPlist "../ExportOptions.plist" \
+            -exportPath "../build/ipa"
+
+          echo "ARTIFACT_PATH=../build/ipa/${{ inputs.package_name }}.ipa" >> "$GITHUB_ENV"
+          echo "ARTIFACT_EXT=ipa" >> "$GITHUB_ENV"
+
+      - name: Build app bundle (device, debug self-signed)
+        if: matrix.label == 'device' && !inputs.sign_ipa
+        working-directory: ${{ inputs.package_path }}
+        run: |
+          CONFIG=$([ "${{ inputs.build_type }}" = "release" ] && echo "Release" || echo "Debug")
+
+          # Build without Apple signing
+          xcodebuild build \
+            -project "${{ inputs.package_name }}.xcodeproj" \
+            -scheme "${{ inputs.package_name }}" \
+            -configuration "$CONFIG" \
+            -destination "${{ matrix.destination }}" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            PRODUCT_BUNDLE_IDENTIFIER="${{ inputs.bundle_id }}" \
+            CONFIGURATION_BUILD_DIR="../build/app"
+
+          # Generate self-signed certificate (like Android debug keystore)
+          openssl genrsa -out ../build/debug.key 2048
+          openssl req -new -x509 \
+            -key ../build/debug.key \
+            -out ../build/debug.cert \
+            -days 365 -nodes \
+            -subj "/CN=iOS Debug/O=Debug/C=US"
+          openssl pkcs12 -export \
+            -out ../build/debug.p12 \
+            -inkey ../build/debug.key \
+            -in ../build/debug.cert \
+            -passout pass:debug \
+            -legacy
+
+          # Setup temporary debug keychain
+          security create-keychain -p "debug" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "debug" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+          security import ../build/debug.p12 -k build.keychain \
+            -P "debug" -T /usr/bin/codesign
+          sudo security add-trusted-cert -d -r trustRoot \
+            -k build.keychain ../build/debug.cert
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: -s \
+            -k "debug" build.keychain
+
+          # Sign the .app bundle
+          /usr/bin/codesign --force --deep --timestamp=none \
+            --sign "iOS Debug" \
+            "../build/app/${{ inputs.package_name }}.app"
+
+          # Package as .ipa (Payload/<App>.app → zip)
+          mkdir -p "../build/ipa/Payload"
+          cp -r "../build/app/${{ inputs.package_name }}.app" \
+            "../build/ipa/Payload/"
+          cd "../build/ipa"
+          zip -r "${{ inputs.package_name }}-debug.ipa" Payload/
+
+          echo "ARTIFACT_PATH=../build/ipa/${{ inputs.package_name }}-debug.ipa" >> "$GITHUB_ENV"
+          echo "ARTIFACT_EXT=ipa" >> "$GITHUB_ENV"
+
+          # Cleanup key material
+          rm -f ../build/debug.key ../build/debug.cert ../build/debug.p12
+
+      # ══════════════════════════════════════════════════════════
+      # SIMULATOR BUILD
+      # ══════════════════════════════════════════════════════════
+      - name: Build simulator app
+        if: matrix.label == 'simulator'
+        working-directory: ${{ inputs.package_path }}
+        run: |
+          CONFIG=$([ "${{ inputs.build_type }}" = "release" ] && echo "Release" || echo "Debug")
+
+          xcodebuild build \
+            -project "${{ inputs.package_name }}.xcodeproj" \
+            -scheme "${{ inputs.package_name }}" \
+            -configuration "$CONFIG" \
+            -destination "${{ matrix.destination }}" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            PRODUCT_BUNDLE_IDENTIFIER="${{ inputs.bundle_id }}" \
+            CONFIGURATION_BUILD_DIR="../build/simulator"
+
+          cd ../build/simulator
+          zip -r "${{ inputs.package_name }}-simulator.zip" \
+            "${{ inputs.package_name }}.app"
+          echo "ARTIFACT_PATH=../build/simulator/${{ inputs.package_name }}-simulator.zip" >> "$GITHUB_ENV"
+          echo "ARTIFACT_EXT=zip" >> "$GITHUB_ENV"
+
+      # ══════════════════════════════════════════════════════════
+      # COMMON: cleanup, rename & upload
+      # ══════════════════════════════════════════════════════════
+      - name: Cleanup keychain
+        if: always() && matrix.label == 'device'
+        run: security delete-keychain build.keychain || true
+
+      - name: Rename artifact
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          SRC="${{ env.ARTIFACT_PATH }}"
+          DST="${{ inputs.package_name }}-v${VERSION}-${{ matrix.label }}.${{ env.ARTIFACT_EXT }}"
+          cp "$SRC" "$DST"
+          echo "FINAL_PATH=$DST" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.package_name }}-${{ matrix.label }}
+          path: ${{ env.FINAL_PATH }}
+
+  release:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.prepare.outputs.version }}
+          name: '${{ inputs.app_name }} v${{ needs.prepare.outputs.version }}'
+          generate_release_notes: true
+          files: artifacts/*
+
+  pages:
+    needs: [prepare, release]
+    if: inputs.deploy_pages
+    uses: Ajustor/workflows/.github/workflows/pages-deploy.yml@master
+    with:
+      package_name: ${{ inputs.app_name }}
+      version: ${{ needs.prepare.outputs.version }}
