@@ -154,6 +154,8 @@ jobs:
                 'arm64-v8a': { name: 'Android (ARM64)', icon: '🤖' },
                 'armeabi-v7a': { name: 'Android (ARM)', icon: '🤖' },
                 'x86_64.apk': { name: 'Android (x86_64)', icon: '🤖' },
+                'device': { name: 'iOS (Device)', icon: '📱' },
+                'simulator': { name: 'iOS (Simulator)', icon: '📱' },
                 'windows': { name: 'Windows', icon: '🪟' },
                 'linux': { name: 'Linux', icon: '🐧' },
               };
