@@ -298,12 +298,9 @@ jobs:
           security unlock-keychain -p "debug" build.keychain
           security set-keychain-settings -t 3600 -u build.keychain
           security import ../build/debug.p12 -k build.keychain \
-            -P "debug" -T /usr/bin/codesign
+            -P "debug" -A
           sudo security add-trusted-cert -d -r trustRoot \
             -k build.keychain ../build/debug.cert
-          security set-key-partition-list \
-            -S apple-tool:,apple:,codesign: -s \
-            -k "debug" build.keychain
 
           # Sign the .app bundle
           /usr/bin/codesign --force --deep --timestamp=none \
