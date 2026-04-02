@@ -298,13 +298,21 @@ jobs:
           security unlock-keychain -p "debug" build.keychain
           security set-keychain-settings -t 3600 -u build.keychain
           security import ../build/debug.p12 -k build.keychain \
-            -P "debug" -A
+            -P "debug" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/xcodebuild
+          security set-key-partition-list -S apple-tool:,apple: -s \
+            -k "debug" build.keychain
           sudo security add-trusted-cert -d -r trustRoot \
             -k build.keychain ../build/debug.cert
 
+          # Find the signing identity from the keychain
+          IDENTITY=$(security find-identity -v -p codesigning build.keychain | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "Using identity: $IDENTITY"
+
           # Sign the .app bundle
           /usr/bin/codesign --force --deep --timestamp=none \
-            --sign "iOS Debug" \
+            --sign "$IDENTITY" \
             "../build/app/${{ inputs.package_name }}.app"
 
           # Package as .ipa (Payload/<App>.app → zip)
