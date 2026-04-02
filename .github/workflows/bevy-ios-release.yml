@@ -288,8 +288,7 @@ jobs:
             -out ../build/debug.p12 \
             -inkey ../build/debug.key \
             -in ../build/debug.cert \
-            -passout pass:debug \
-            -legacy
+            -passout pass:debug
 
           # Setup temporary debug keychain
           security create-keychain -p "debug" build.keychain
