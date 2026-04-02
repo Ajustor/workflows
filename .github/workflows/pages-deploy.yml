@@ -22,6 +22,20 @@ on:
         description: 'Changelog content to display (supports markdown). If empty, fetches from GitHub Release notes.'
         required: false
         type: string
+      bundle_id:
+        description: 'iOS bundle identifier (e.g. com.example.app). Required for iOS OTA install and AltStore source.'
+        required: false
+        type: string
+      developer_name:
+        description: 'Developer name for AltStore source metadata.'
+        required: false
+        type: string
+        default: ''
+      app_description:
+        description: 'Short app description for AltStore source metadata.'
+        required: false
+        type: string
+        default: ''
 
 jobs:
   pages:
@@ -78,11 +92,112 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           CHANGELOG: ${{ steps.release-notes.outputs.changelog }}
           IS_REPO_PUBLIC: ${{ inputs.is_repo_public }}
+          BUNDLE_ID: ${{ inputs.bundle_id }}
+          DEVELOPER_NAME: ${{ inputs.developer_name }}
+          APP_DESCRIPTION: ${{ inputs.app_description }}
         run: |
           mkdir -p public
 
           # Copy binaries to public folder
           cp artifacts/* public/ 2>/dev/null || true
+
+          # Compute GitHub Pages base URL
+          OWNER=$(echo "$GITHUB_REPOSITORY" | cut -d'/' -f1)
+          REPO=$(echo "$GITHUB_REPOSITORY" | cut -d'/' -f2)
+          PAGES_BASE_URL="https://${OWNER}.github.io/${REPO}"
+
+          # Generate manifest.plist for each iOS IPA (OTA install)
+          if [ -n "$BUNDLE_ID" ]; then
+            for ipa in public/*.ipa; do
+              [ -f "$ipa" ] || continue
+              IPA_FILENAME=$(basename "$ipa")
+              MANIFEST_NAME="${IPA_FILENAME%.ipa}-manifest.plist"
+              cat > "public/${MANIFEST_NAME}" << PLISTEOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>items</key>
+            <array>
+              <dict>
+                <key>assets</key>
+                <array>
+                  <dict>
+                    <key>kind</key>
+                    <string>software-package</string>
+                    <key>url</key>
+                    <string>${PAGES_BASE_URL}/${IPA_FILENAME}</string>
+                  </dict>
+                </array>
+                <key>metadata</key>
+                <dict>
+                  <key>bundle-identifier</key>
+                  <string>${BUNDLE_ID}</string>
+                  <key>bundle-version</key>
+                  <string>${VERSION}</string>
+                  <key>kind</key>
+                  <string>software</string>
+                  <key>title</key>
+                  <string>${PACKAGE_NAME}</string>
+                </dict>
+              </dict>
+            </array>
+          </dict>
+          </plist>
+          PLISTEOF
+            done
+          fi
+
+          # Generate AltStore source JSON for iOS IPAs
+          if [ -n "$BUNDLE_ID" ]; then
+            APPS_JSON="[]"
+            for ipa in public/*.ipa; do
+              [ -f "$ipa" ] || continue
+              # Skip simulator builds
+              echo "$ipa" | grep -q "simulator" && continue
+              IPA_FILENAME=$(basename "$ipa")
+              IPA_SIZE=$(stat -c%s "$ipa" 2>/dev/null || stat -f%z "$ipa" 2>/dev/null || echo "0")
+              VERSION_DATE=$(date -u +"%Y-%m-%d")
+              DOWNLOAD_URL="${PAGES_BASE_URL}/${IPA_FILENAME}"
+              DEV_NAME="${DEVELOPER_NAME:-${OWNER}}"
+              DESC="${APP_DESCRIPTION:-${PACKAGE_NAME} v${VERSION}}"
+              APPS_JSON=$(echo "$APPS_JSON" | jq \
+                --arg name "$PACKAGE_NAME" \
+                --arg bid "$BUNDLE_ID" \
+                --arg dev "$DEV_NAME" \
+                --arg ver "$VERSION" \
+                --arg date "$VERSION_DATE" \
+                --arg url "$DOWNLOAD_URL" \
+                --arg desc "$DESC" \
+                --argjson size "$IPA_SIZE" \
+                '. + [{
+                  name: $name,
+                  bundleIdentifier: $bid,
+                  developerName: $dev,
+                  version: $ver,
+                  versionDate: $date,
+                  downloadURL: $url,
+                  localizedDescription: $desc,
+                  size: $size
+                }]')
+            done
+            # Only write source if we found IPAs
+            if [ "$(echo "$APPS_JSON" | jq 'length')" -gt 0 ]; then
+              jq -n \
+                --arg name "${PACKAGE_NAME}" \
+                --arg identifier "${BUNDLE_ID}.source" \
+                --argjson apps "$APPS_JSON" \
+                '{
+                  name: $name,
+                  identifier: $identifier,
+                  sourceURL: "",
+                  apps: $apps
+                }' > public/altstore-source.json
+              # Patch sourceURL with the actual URL
+              SOURCE_URL="${PAGES_BASE_URL}/altstore-source.json"
+              jq --arg url "$SOURCE_URL" '.sourceURL = $url' public/altstore-source.json > public/altstore-source.tmp && mv public/altstore-source.tmp public/altstore-source.json
+            fi
+          fi
 
           # Generate download page
           cat > public/index.html << 'HTMLEOF'
@@ -109,6 +224,15 @@ jobs:
               .platform { font-weight: 600; flex: 1; }
               .filename { color: #888; font-size: 0.9rem; }
               .icon { font-size: 1.5rem; margin-right: 1rem; }
+              .install-badge { background: linear-gradient(90deg, #00d9ff, #00ff88); color: #1a1a2e; padding: 0.3rem 0.8rem; border-radius: 20px; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; margin-left: 0.5rem; white-space: nowrap; }
+              .install-section { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.5rem; }
+              .install-btn { display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.8rem 1.5rem; border-radius: 10px; text-decoration: none; font-weight: 600; font-size: 0.95rem; transition: all 0.2s; }
+              .install-btn:hover { transform: translateY(-2px); box-shadow: 0 4px 15px rgba(0,0,0,0.3); }
+              .install-btn-altstore { background: linear-gradient(135deg, #5AC8FA, #007AFF); color: #fff; }
+              .install-btn-ota { background: linear-gradient(135deg, #34C759, #30D158); color: #fff; }
+              .install-btn-android { background: linear-gradient(135deg, #3DDC84, #00C853); color: #1a1a2e; }
+              .install-hint { color: #666; font-size: 0.8rem; margin-top: 0.5rem; }
+              .separator { border: none; border-top: 1px solid rgba(255,255,255,0.1); margin: 1.5rem 0; }
               .changelog { line-height: 1.6; }
               .changelog h1, .changelog h2, .changelog h3 { color: #00d9ff; margin: 1.5rem 0 0.75rem 0; }
               .changelog h1:first-child, .changelog h2:first-child, .changelog h3:first-child { margin-top: 0; }
@@ -132,7 +256,10 @@ jobs:
                 <p class="version">Version VERSION_PLACEHOLDER</p>
               </header>
               <section class="section">
-                <h2>📦 Download</h2>
+                <h2>📦 Install</h2>
+                <div id="install-buttons" class="install-section"></div>
+                <div id="install-hints"></div>
+                <hr class="separator" id="install-separator" style="display:none;">
                 <ul class="download-list" id="downloads"></ul>
               </section>
               <section class="section" id="changelog-section">
@@ -145,6 +272,7 @@ jobs:
             </div>
             <script>
               const files = FILELIST_PLACEHOLDER;
+              const pagesBaseUrl = 'PAGES_BASE_URL_PLACEHOLDER';
               const platforms = {
                 'x86_64-pc-windows-msvc': { name: 'Windows (x64)', icon: '🪟' },
                 'x86_64-unknown-linux-gnu': { name: 'Linux (x64)', icon: '🐧' },
@@ -160,7 +288,72 @@ jobs:
                 'linux': { name: 'Linux', icon: '🐧' },
               };
               const list = document.getElementById('downloads');
-              for (const file of files) {
+              const installBtns = document.getElementById('install-buttons');
+              const installHints = document.getElementById('install-hints');
+              const installSep = document.getElementById('install-separator');
+              const hasAltStoreSource = files.includes('altstore-source.json');
+              const hasIosDevice = files.some(f => f.endsWith('.ipa') && f.includes('device'));
+              const hasAndroid = files.some(f => f.endsWith('.apk'));
+              const hasIosManifest = files.some(f => f.endsWith('-manifest.plist'));
+
+              let hasInstallButtons = false;
+
+              // AltStore button (iOS - free, no dev account needed)
+              if (hasAltStoreSource && hasIosDevice) {
+                const sourceUrl = encodeURIComponent(pagesBaseUrl + '/altstore-source.json');
+                const btn = document.createElement('a');
+                btn.href = 'altstore://source?url=' + sourceUrl;
+                btn.className = 'install-btn install-btn-altstore';
+                btn.innerHTML = '📱 Add to AltStore';
+                installBtns.appendChild(btn);
+                hasInstallButtons = true;
+              }
+
+              // OTA install button (iOS - requires signed IPA)
+              if (hasIosManifest && hasIosDevice) {
+                const ipaFile = files.find(f => f.endsWith('.ipa') && f.includes('device'));
+                if (ipaFile) {
+                  const manifestFile = ipaFile.replace('.ipa', '-manifest.plist');
+                  if (files.includes(manifestFile)) {
+                    const manifestUrl = encodeURIComponent(pagesBaseUrl + '/' + manifestFile);
+                    const btn = document.createElement('a');
+                    btn.href = 'itms-services://?action=download-manifest&url=' + manifestUrl;
+                    btn.className = 'install-btn install-btn-ota';
+                    btn.innerHTML = '📱 Install on iOS';
+                    installBtns.appendChild(btn);
+                    hasInstallButtons = true;
+                  }
+                }
+              }
+
+              // Android direct install button
+              if (hasAndroid) {
+                const apkFile = files.find(f => f.endsWith('.apk') && (f.includes('arm64') || f.includes('arm64-v8a'))) || files.find(f => f.endsWith('.apk'));
+                if (apkFile) {
+                  const btn = document.createElement('a');
+                  btn.href = apkFile;
+                  btn.className = 'install-btn install-btn-android';
+                  btn.innerHTML = '🤖 Install on Android';
+                  installBtns.appendChild(btn);
+                  hasInstallButtons = true;
+                }
+              }
+
+              // Show hints and separator if we have install buttons
+              if (hasInstallButtons) {
+                installSep.style.display = 'block';
+                const hints = [];
+                if (hasAltStoreSource) hints.push('AltStore: install <a href="https://altstore.io" style="color:#5AC8FA">AltStore</a> first, then tap the button above.');
+                if (hasIosManifest) hints.push('iOS direct install requires a signed IPA (Apple Developer account).');
+                if (hasAndroid) hints.push('Android: allow install from unknown sources when prompted.');
+                if (hints.length > 0) {
+                  installHints.innerHTML = hints.map(h => '<p class="install-hint">' + h + '</p>').join('');
+                }
+              }
+
+              // Filter out manifest.plist and altstore-source.json from download list
+              const displayFiles = files.filter(f => !f.endsWith('-manifest.plist') && f !== 'altstore-source.json');
+              for (const file of displayFiles) {
                 let platform = Object.keys(platforms).find(p => file.includes(p)) || 'unknown';
                 // Special handling for APK files
                 if (file.endsWith('.apk') && platform === 'unknown') {
@@ -215,6 +408,7 @@ jobs:
           sed -i "s|FILELIST_PLACEHOLDER|${FILELIST}|g" public/index.html
           sed -i "s|CHANGELOG_PLACEHOLDER|${CHANGELOG_JSON}|g" public/index.html
           sed -i "s|IS_REPO_PUBLIC_PLACEHOLDER|${IS_REPO_PUBLIC}|g" public/index.html
+          sed -i "s|PAGES_BASE_URL_PLACEHOLDER|${PAGES_BASE_URL}|g" public/index.html
 
       - name: Setup Pages
         uses: actions/configure-pages@v5

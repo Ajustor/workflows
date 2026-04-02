@@ -405,3 +405,4 @@ jobs:
     with:
       package_name: ${{ inputs.app_name }}
       version: ${{ needs.prepare.outputs.version }}
+      bundle_id: ${{ inputs.bundle_id }}
