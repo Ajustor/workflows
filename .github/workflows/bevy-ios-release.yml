@@ -322,9 +322,9 @@ jobs:
           cp -r "../build/app/${{ inputs.package_name }}.app" \
             "../build/ipa/Payload/"
           cd "../build/ipa"
-          zip -r "${{ inputs.package_name }}-debug.ipa" Payload/
+          zip -r "${{ inputs.package_name }}.ipa" Payload/
 
-          echo "ARTIFACT_PATH=../build/ipa/${{ inputs.package_name }}-debug.ipa" >> "$GITHUB_ENV"
+          echo "ARTIFACT_PATH=../build/ipa/${{ inputs.package_name }}.ipa" >> "$GITHUB_ENV"
           echo "ARTIFACT_EXT=ipa" >> "$GITHUB_ENV"
 
           # Cleanup key material
@@ -364,12 +364,13 @@ jobs:
         run: security delete-keychain build.keychain || true
 
       - name: Rename artifact
+        working-directory: ${{ inputs.package_path }}
         run: |
           VERSION="${{ needs.prepare.outputs.version }}"
           SRC="${{ env.ARTIFACT_PATH }}"
           DST="${{ inputs.package_name }}-v${VERSION}-${{ matrix.label }}.${{ env.ARTIFACT_EXT }}"
           cp "$SRC" "$DST"
-          echo "FINAL_PATH=$DST" >> "$GITHUB_ENV"
+          echo "FINAL_PATH=${{ inputs.package_path }}/$DST" >> "$GITHUB_ENV"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
