@@ -284,7 +284,9 @@ jobs:
             -key ../build/debug.key \
             -out ../build/debug.cert \
             -days 365 -nodes \
-            -subj "/CN=iOS Debug/O=Debug/C=US"
+            -subj "/CN=iOS Debug/O=Debug/C=US" \
+            -addext "keyUsage=digitalSignature" \
+            -addext "extendedKeyUsage=codeSigning"
           openssl pkcs12 -export \
             -out ../build/debug.p12 \
             -inkey ../build/debug.key \
