@@ -74,6 +74,11 @@ on:
         required: false
         type: boolean
         default: false
+      icon_url:
+        description: 'Icon URL for AltStore app entries (e.g. https://example.com/icon-512.png)'
+        required: false
+        type: string
+        default: ''
 
     secrets:
       APPLE_CERTIFICATE_P12_BASE64:
@@ -406,3 +411,4 @@ jobs:
       package_name: ${{ inputs.app_name }}
       version: ${{ needs.prepare.outputs.version }}
       bundle_id: ${{ inputs.bundle_id }}
+      icon_url: ${{ inputs.icon_url }}

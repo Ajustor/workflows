@@ -36,6 +36,11 @@ on:
         required: false
         type: string
         default: ''
+      icon_url:
+        description: 'Icon URL for AltStore app entries (e.g. https://example.com/icon-512.png)'
+        required: false
+        type: string
+        default: ''
 
 jobs:
   pages:
@@ -97,11 +102,17 @@ jobs:
           BUNDLE_ID: ${{ inputs.bundle_id }}
           DEVELOPER_NAME: ${{ inputs.developer_name }}
           APP_DESCRIPTION: ${{ inputs.app_description }}
+          ICON_URL: ${{ inputs.icon_url }}
         run: |
           mkdir -p public
 
           # Copy binaries to public folder
           cp artifacts/* public/ 2>/dev/null || true
+
+          # Copy icon for AltStore if available
+          if [ -f docs/icon-512.png ]; then
+            cp docs/icon-512.png public/
+          fi
 
           # Compute GitHub Pages base URL
           OWNER=$(echo "$GITHUB_REPOSITORY" | cut -d'/' -f1)
@@ -163,6 +174,10 @@ jobs:
               DOWNLOAD_URL="${PAGES_BASE_URL}/${IPA_FILENAME}"
               DEV_NAME="${DEVELOPER_NAME:-${OWNER}}"
               DESC="${APP_DESCRIPTION:-${PACKAGE_NAME} v${VERSION}}"
+              # Default icon URL to PAGES_BASE_URL/icon-512.png if not provided
+              if [ -z "${ICON_URL:-}" ]; then
+                ICON_URL="${PAGES_BASE_URL}/icon-512.png"
+              fi
               NEW_VERSIONS_JSON=$(echo "$NEW_VERSIONS_JSON" | jq \
                 --arg name "$PACKAGE_NAME" \
                 --arg bid "$BUNDLE_ID" \
@@ -172,6 +187,8 @@ jobs:
                 --arg url "$DOWNLOAD_URL" \
                 --arg desc "$DESC" \
                 --argjson size "$IPA_SIZE" \
+                --arg icon "$ICON_URL" \
+                --argjson mid "null" \
                 '. + [{
                   name: $name,
                   bundleIdentifier: $bid,
@@ -180,7 +197,9 @@ jobs:
                   versionDate: $date,
                   downloadURL: $url,
                   localizedDescription: $desc,
-                  size: $size
+                  size: $size,
+                  iconURL: $icon,
+                  marketplaceID: $mid
                 }]')
             done
             # Only write source if we found IPAs
@@ -202,16 +221,20 @@ jobs:
                   --arg url "$SOURCE_URL" \
                   '.apps = $apps | .sourceURL = $url' > public/altstore-source.json
               else
+                # Use same icon URL for source and apps (apps already have iconURL from NEW_VERSIONS_JSON)
                 jq -n \
                   --arg name "${PACKAGE_NAME}" \
                   --arg identifier "${BUNDLE_ID}.source" \
                   --arg dev "${DEV_NAME}" \
                   --arg url "$SOURCE_URL" \
+                  --arg icon "$ICON_URL" \
                   --argjson apps "$NEW_VERSIONS_JSON" \
                   '{
                     name: $name,
                     identifier: $identifier,
                     sourceURL: $url,
+                    iconURL: $icon,
+                    headerURL: $icon,
                     apps: $apps
                   }' > public/altstore-source.json
               fi
