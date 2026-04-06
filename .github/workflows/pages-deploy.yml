@@ -48,6 +48,8 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -150,7 +152,7 @@ jobs:
 
           # Generate AltStore source JSON for iOS IPAs
           if [ -n "$BUNDLE_ID" ]; then
-            APPS_JSON="[]"
+            NEW_VERSIONS_JSON="[]"
             for ipa in public/*.ipa; do
               [ -f "$ipa" ] || continue
               # Skip simulator builds
@@ -161,7 +163,7 @@ jobs:
               DOWNLOAD_URL="${PAGES_BASE_URL}/${IPA_FILENAME}"
               DEV_NAME="${DEVELOPER_NAME:-${OWNER}}"
               DESC="${APP_DESCRIPTION:-${PACKAGE_NAME} v${VERSION}}"
-              APPS_JSON=$(echo "$APPS_JSON" | jq \
+              NEW_VERSIONS_JSON=$(echo "$NEW_VERSIONS_JSON" | jq \
                 --arg name "$PACKAGE_NAME" \
                 --arg bid "$BUNDLE_ID" \
                 --arg dev "$DEV_NAME" \
@@ -182,20 +184,37 @@ jobs:
                 }]')
             done
             # Only write source if we found IPAs
-            if [ "$(echo "$APPS_JSON" | jq 'length')" -gt 0 ]; then
-              jq -n \
-                --arg name "${PACKAGE_NAME}" \
-                --arg identifier "${BUNDLE_ID}.source" \
-                --argjson apps "$APPS_JSON" \
-                '{
-                  name: $name,
-                  identifier: $identifier,
-                  sourceURL: "",
-                  apps: $apps
-                }' > public/altstore-source.json
-              # Patch sourceURL with the actual URL
+            if [ "$(echo "$NEW_VERSIONS_JSON" | jq 'length')" -gt 0 ]; then
               SOURCE_URL="${PAGES_BASE_URL}/altstore-source.json"
-              jq --arg url "$SOURCE_URL" '.sourceURL = $url' public/altstore-source.json > public/altstore-source.tmp && mv public/altstore-source.tmp public/altstore-source.json
+              DEV_NAME="${DEVELOPER_NAME:-${OWNER}}"
+              # Use existing docs/altstore-source.json as base if available, otherwise generate
+              if [ -f "docs/altstore-source.json" ]; then
+                BASE_SOURCE=$(cat docs/altstore-source.json)
+                # For each new app entry, update matching bundle ID or append
+                UPDATED_APPS=$(echo "$BASE_SOURCE" | jq --argjson new "$NEW_VERSIONS_JSON" '
+                  .apps as $existing |
+                  ($new | map(.bundleIdentifier)) as $new_bids |
+                  ($existing | map(select(.bundleIdentifier as $bid | $new_bids | index($bid) | not))) +
+                  $new
+                ')
+                echo "$BASE_SOURCE" | jq \
+                  --argjson apps "$UPDATED_APPS" \
+                  --arg url "$SOURCE_URL" \
+                  '.apps = $apps | .sourceURL = $url' > public/altstore-source.json
+              else
+                jq -n \
+                  --arg name "${PACKAGE_NAME}" \
+                  --arg identifier "${BUNDLE_ID}.source" \
+                  --arg dev "${DEV_NAME}" \
+                  --arg url "$SOURCE_URL" \
+                  --argjson apps "$NEW_VERSIONS_JSON" \
+                  '{
+                    name: $name,
+                    identifier: $identifier,
+                    sourceURL: $url,
+                    apps: $apps
+                  }' > public/altstore-source.json
+              fi
             fi
           fi
 
